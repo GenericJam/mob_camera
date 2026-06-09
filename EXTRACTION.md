@@ -21,19 +21,39 @@ following the `mob_location` template. Staged across turns.
   - [x] Android zig `priv/native/jni/mob_camera_nif.zig` (self-contained, location
     pattern: `MobCameraBridge` jclass + 6 method IDs + `nativeDeliverCameraFrame`
     + 6 NIFs + entry).
-  - [ ] **Android Kotlin `priv/native/android/MobCameraBridge.kt`** — the big
-    remaining piece. Extract the `camera_*` CameraX impl from mob_new
-    `MobBridge.kt.eex` (~725: capture_photo/video TakePicture/CaptureVideo
-    activity contracts; ImageAnalysis frame loop + ARGB→BGRA; ~638
-    `nativeDeliverCameraFrame` external; CameraX imports ~198) into a plugin
-    bridge class implementing `MobPermissionProvider` (`:camera`→`CAMERA`) +
-    `MobActivityAware` (CameraX/picker contracts need the host Activity), and
-    register via `MobPluginBootstrap`.
-  - [ ] **Open iOS build item:** plugin-swift bridging header so
-    `MobCameraPreviewView.swift` sees `g_preview_session` (mob_camera_shim.h).
-    Plus the core-builtin `:camera_preview` renderer node (MobNode.h `.cameraPreview`
-    + `cameraFacing`, MobRootView.swift:442) → must become the plugin native-view
-    component on strip. These are net-new plugin-system capabilities (cf. bt).
+  - [x] **Android Kotlin `priv/native/android/MobCameraBridge.kt`** — drafted
+    self-contained (MobPermissionProvider `:camera`→CAMERA + MobActivityAware):
+    capture via a headless `CameraResultFragment` (TakePicture/CaptureVideo) so
+    it needs no MainActivity changes; frame stream state + `deliverFrame` + the
+    ARGB→RGB-f32 / BGRA conversion helpers; nativeRegister + the deliver thunks.
+  - [ ] **zig: add 2 capture deliver thunks** the Kotlin calls —
+    `nativeDeliverCameraFile(pid, kind, path)` → `{:camera, :photo|:video,
+    %{path}}` and `nativeDeliverCameraCancelled(pid)` → `{:camera, :cancelled}`.
+    Both read jstrings (use jni `GetStringUTFChars`; core wraps it in mob_zig.zig
+    ~585). location's thunks passed only primitives, so this is new there.
+
+### Net-new plugin-system capabilities this extraction needs (the bt-style wall)
+The pure-NIF parts (capture, frame stream, `:camera` permission) extract cleanly
+like location. The **live preview** does not — it needs capabilities that don't
+exist yet, exactly like the bt extraction needed two:
+
+  1. **iOS:** plugin-swift **bridging header** so `MobCameraPreviewView.swift`
+     sees the `.m`'s `g_preview_session` (mob_camera_shim.h), AND converting the
+     **core-builtin `:camera_preview` renderer node** (MobNode.h `.cameraPreview`
+     + `cameraFacing`; MobRootView.swift:442) into a plugin native-view component.
+  2. **Android:** a plugin **Compose native-view** for the preview (the
+     `MobCameraPreview` composable at MobBridge.kt ~2657) bound to this bridge's
+     observable state (it owns the CameraX binding + the frame analyzer). The
+     tier-2 component path (signature_pad) is the seam, but the preview view also
+     drives the analyzer off plugin-owned state, which is a new shape.
+
+**Recommendation:** ship a first verifiable `mob_camera` WITHOUT the live-preview
+component — `capture_*` + `start/stop_frame_stream` are pure NIFs (+ the Fragment)
+and extract cleanly; defer `preview/1` + the `camera_preview` component to a
+follow-up once the plugin native-view-bound-to-state capability lands. Then the
+Stage-2 strip removes the camera NIFs + capture + the `:camera` permission half
+(keeping `:microphone`), but LEAVES `:camera_preview` (MobNode node + renderer +
+MobCameraPreview) in core until the component capability exists.
 - [ ] **Stage 2 — strip core + mob_new templates.**
 - [ ] **Stage 3 — device-verify** iPhone + Moto G (capture, preview, frame
   stream, `:camera` permission via registry), parity before/after.
