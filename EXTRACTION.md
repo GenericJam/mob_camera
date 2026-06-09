@@ -10,8 +10,30 @@ following the `mob_location` template. Staged across turns.
   start/stop_preview, start/stop_frame_stream, frame_stream_opts — parity with
   the old `Mob.Camera` + `Mob.UI.camera_preview`), `src/mob_camera_nif.erl`
   (6 NIF stubs), `priv/mob_plugin.exs` (manifest spec).
-- [ ] **Stage 1b — native sources moved** (next): extract the native code from
-  core into this plugin, self-contained (see checklist below).
+- [~] **Stage 1b — native sources moved** (in progress):
+  - [x] iOS NIF `priv/native/ios/mob_camera_nif.m` (609 lines, self-contained:
+    capture + shared session + preview control + vImage frame stream + `:camera`
+    permission via registry; `mob_send2`→`cam_send2`, `mob_root_vc`→`cam_root_vc`,
+    `g_preview_session` left non-static for Swift). Brace-balanced, no residual
+    core-helper refs.
+  - [x] iOS Swift preview `priv/native/ios/MobCameraPreviewView.swift` +
+    `mob_camera_shim.h` (the `extern g_preview_session` bridging decl).
+  - [x] Android zig `priv/native/jni/mob_camera_nif.zig` (self-contained, location
+    pattern: `MobCameraBridge` jclass + 6 method IDs + `nativeDeliverCameraFrame`
+    + 6 NIFs + entry).
+  - [ ] **Android Kotlin `priv/native/android/MobCameraBridge.kt`** — the big
+    remaining piece. Extract the `camera_*` CameraX impl from mob_new
+    `MobBridge.kt.eex` (~725: capture_photo/video TakePicture/CaptureVideo
+    activity contracts; ImageAnalysis frame loop + ARGB→BGRA; ~638
+    `nativeDeliverCameraFrame` external; CameraX imports ~198) into a plugin
+    bridge class implementing `MobPermissionProvider` (`:camera`→`CAMERA`) +
+    `MobActivityAware` (CameraX/picker contracts need the host Activity), and
+    register via `MobPluginBootstrap`.
+  - [ ] **Open iOS build item:** plugin-swift bridging header so
+    `MobCameraPreviewView.swift` sees `g_preview_session` (mob_camera_shim.h).
+    Plus the core-builtin `:camera_preview` renderer node (MobNode.h `.cameraPreview`
+    + `cameraFacing`, MobRootView.swift:442) → must become the plugin native-view
+    component on strip. These are net-new plugin-system capabilities (cf. bt).
 - [ ] **Stage 2 — strip core + mob_new templates.**
 - [ ] **Stage 3 — device-verify** iPhone + Moto G (capture, preview, frame
   stream, `:camera` permission via registry), parity before/after.

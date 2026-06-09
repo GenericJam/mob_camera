@@ -55,6 +55,10 @@
     # the host template gated on mob_camera. Decision tracked in EXTRACTION.md.
   },
   ios: %{
+    # The live-preview SwiftUI view (registered under "MobCamera_PreviewView").
+    # It reads the NIF's g_preview_session via priv/native/ios/mob_camera_shim.h
+    # — the plugin-swift bridging-header wiring is the one open build item.
+    swift_files: ["priv/native/ios/MobCameraPreviewView.swift"],
     frameworks: ["AVFoundation", "Photos", "MobileCoreServices"],
     plist_keys: %{
       "NSCameraUsageDescription" => "The camera is used for capture and preview."
