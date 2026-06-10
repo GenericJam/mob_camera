@@ -121,7 +121,7 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFrame(
         erts.enif_make_binary(env, &pix),
         erts.enif_make_int(env, width),
         erts.enif_make_int(env, height),
-        erts.atom(env, format),
+        erts.enif_make_atom(env, format),
         erts.enif_make_int64(env, timestamp_ms),
         erts.enif_make_int64(env, dropped),
     };
@@ -156,7 +156,7 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFile(
     const keys = [_]erts.ERL_NIF_TERM{erts.atom(env, "path")};
     const vals = [_]erts.ERL_NIF_TERM{erts.enif_make_binary(env, &pbin)};
     const map = erts.makeMap(env, &keys, &vals) orelse return;
-    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.atom(env, kind_c), map });
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.enif_make_atom(env, kind_c), map });
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
@@ -197,14 +197,25 @@ fn nif_camera_capture_video(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const e
     return callBridgePidStr(env, g_cam.capture_video, pid, jni.asCStr(&d_buf));
 }
 
+// Copy a binary/iolist arg into a null-terminated buffer. The bridge call
+// (newStringUTF) copies the jstring synchronously, so a stack buffer is fine.
+fn binArgZ(env: ?*erts.ErlNifEnv, term: erts.ERL_NIF_TERM, buf: []u8) bool {
+    var bin: erts.ErlNifBinary = undefined;
+    if (erts.enif_inspect_binary(env, term, &bin) == 0 and
+        erts.enif_inspect_iolist_as_binary(env, term, &bin) == 0) return false;
+    const n = @min(bin.size, buf.len - 1);
+    @memcpy(buf[0..n], bin.data[0..n]);
+    buf[n] = 0;
+    return true;
+}
+
 fn nif_camera_start_preview(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
-    const bin = jni.getBinOrIolist(env, argv[0]) orelse return erts.badarg(env);
-    const json = jni.binToCString(bin) orelse return erts.atom(env, "error");
-    defer jni.freeCString(json);
+    var jbuf: [2048]u8 = undefined;
+    if (!binArgZ(env, argv[0], &jbuf)) return erts.badarg(env);
     var pid: erts.ErlNifPid = undefined;
     _ = erts.enif_self(env, &pid);
-    return callBridgePidStr(env, g_cam.start_preview, pid, json);
+    return callBridgePidStr(env, g_cam.start_preview, pid, @ptrCast(&jbuf));
 }
 
 fn nif_camera_stop_preview(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
@@ -215,12 +226,11 @@ fn nif_camera_stop_preview(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const er
 
 fn nif_camera_start_frame_stream(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
-    const bin = jni.getBinOrIolist(env, argv[0]) orelse return erts.badarg(env);
-    const json = jni.binToCString(bin) orelse return erts.atom(env, "error");
-    defer jni.freeCString(json);
+    var jbuf: [2048]u8 = undefined;
+    if (!binArgZ(env, argv[0], &jbuf)) return erts.badarg(env);
     var pid: erts.ErlNifPid = undefined;
     _ = erts.enif_self(env, &pid);
-    return callBridgePidStr(env, g_cam.start_frame_stream, pid, json);
+    return callBridgePidStr(env, g_cam.start_frame_stream, pid, @ptrCast(&jbuf));
 }
 
 fn nif_camera_stop_frame_stream(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {

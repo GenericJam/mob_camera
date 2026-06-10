@@ -2,7 +2,8 @@
   name: :mob_camera,
   mob_version: "~> 0.6",
   plugin_spec_version: 1,
-  description: "Native camera capture, live preview, and frame streaming — extracted from mob core in Wave 2",
+  description:
+    "Native camera capture, live preview, and frame streaming — extracted from mob core in Wave 2",
   nifs: [
     # iOS: Objective-C NIF — UIImagePickerController capture, a shared
     # AVCaptureSession for preview + frame streaming (vImage resize/convert),
@@ -18,6 +19,14 @@
   # (core) for the view + `MobCamera.start_preview/2` (this plugin) to activate
   # the session. The preview-as-plugin-component move waits on the plugin
   # native-view-bound-to-state capability (see EXTRACTION.md).
+  # Force the native NIF module loaded at boot so its iOS `load` callback runs
+  # eagerly and registers the :camera permission handler — otherwise a screen
+  # requesting :camera in mount/3 (before any MobCamera NIF call) hits :badarg,
+  # because on iOS the handler self-registers lazily on first NIF load. (Android
+  # registers eagerly via MobPluginBootstrap, so it has no such gap.)
+  lifecycle: %{
+    on_start: {MobCamera, :__ensure_native_loaded__, []}
+  },
   permissions: [
     # iOS handler self-registered at NIF load (mob_camera_request_permission ->
     # AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo); Android mapping
