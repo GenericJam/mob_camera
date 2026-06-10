@@ -43,21 +43,6 @@ defmodule MobCamera do
       {Mob.UI.camera_preview(facing: :back)}
   """
 
-  @doc false
-  # Force-load the native NIF module at plugin boot (wired via the manifest's
-  # lifecycle.on_start) so its iOS `load` callback runs eagerly and registers the
-  # `:camera` permission handler with core's runtime permission registry. Without
-  # this the handler registers only lazily on the first NIF call, so a screen that
-  # requests `:camera` in mount/3 — before any MobCamera call — hits :badarg
-  # (core's nif_request_permission falls through to the registry and finds no
-  # "camera" handler). Android registers eagerly via MobPluginBootstrap at boot;
-  # this is the iOS counterpart.
-  @spec __ensure_native_loaded__() :: :ok
-  def __ensure_native_loaded__ do
-    _ = Code.ensure_loaded(:mob_camera_nif)
-    :ok
-  end
-
   @doc """
   Open the camera to capture a photo.
 
