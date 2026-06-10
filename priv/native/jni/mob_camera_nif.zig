@@ -130,6 +130,51 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFrame(
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
+// Capture result: kind = "photo" | "video"; builds {:camera, kind, %{path}}.
+export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFile(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    pid_long: jni.JLong,
+    kind: jni.JString,
+    path: jni.JString,
+) callconv(.c) void {
+    _ = cls;
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+
+    const kind_c = jenv.*.GetStringUTFChars.?(jenv, kind, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, kind, kind_c);
+    const path_c = jenv.*.GetStringUTFChars.?(jenv, path, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, path, path_c);
+
+    const plen = std.mem.len(path_c);
+    var pbin: erts.ErlNifBinary = undefined;
+    if (erts.enif_alloc_binary(plen, &pbin) == 0) return;
+    @memcpy(pbin.data[0..plen], path_c[0..plen]);
+
+    const keys = [_]erts.ERL_NIF_TERM{erts.atom(env, "path")};
+    const vals = [_]erts.ERL_NIF_TERM{erts.enif_make_binary(env, &pbin)};
+    const map = erts.makeMap(env, &keys, &vals) orelse return;
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.atom(env, kind_c), map });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+// {:camera, :cancelled}
+export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraCancelled(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    pid_long: jni.JLong,
+) callconv(.c) void {
+    _ = jenv;
+    _ = cls;
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.atom(env, "cancelled") });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
 // ── NIFs ──────────────────────────────────────────────────────────────────
 fn nif_camera_capture_photo(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;

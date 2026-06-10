@@ -12,18 +12,12 @@
     # Android: zig NIF bridging to CameraX via the Kotlin MobCameraBridge.
     %{module: :mob_camera_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android}
   ],
-  # The live-preview view (MobCamera.preview/1). The native view displays the
-  # shared capture session start_preview/2 activates. Encoded registry key
-  # "MobCamera_PreviewView" (Elixir module, `Elixir.` stripped, dots -> `_`).
-  ui_components: [
-    %{
-      tag: "CameraPreview",
-      atom: :camera_preview,
-      props: [:facing],
-      ios: %{view_module: "MobCamera_PreviewView"},
-      android: %{composable: "MobCamera_PreviewView"}
-    }
-  ],
+  # DESCOPE: the live-preview VIEW stays in mob core for now (its renderer node
+  # reads the session this plugin's NIF owns, via a weak extern). So this plugin
+  # does NOT ship a preview component yet — apps use `Mob.UI.camera_preview`
+  # (core) for the view + `MobCamera.start_preview/2` (this plugin) to activate
+  # the session. The preview-as-plugin-component move waits on the plugin
+  # native-view-bound-to-state capability (see EXTRACTION.md).
   permissions: [
     # iOS handler self-registered at NIF load (mob_camera_request_permission ->
     # AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo); Android mapping
@@ -55,10 +49,6 @@
     # the host template gated on mob_camera. Decision tracked in EXTRACTION.md.
   },
   ios: %{
-    # The live-preview SwiftUI view (registered under "MobCamera_PreviewView").
-    # It reads the NIF's g_preview_session via priv/native/ios/mob_camera_shim.h
-    # — the plugin-swift bridging-header wiring is the one open build item.
-    swift_files: ["priv/native/ios/MobCameraPreviewView.swift"],
     frameworks: ["AVFoundation", "Photos", "MobileCoreServices"],
     plist_keys: %{
       "NSCameraUsageDescription" => "The camera is used for capture and preview."

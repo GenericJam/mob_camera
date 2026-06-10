@@ -35,12 +35,12 @@ defmodule MobCamera do
 
   ## Live preview
 
-  Pair `start_preview/2` with a `preview/1` component in your render tree to show
-  the feed:
+  Pair `start_preview/2` with a `Mob.UI.camera_preview/1` component (in mob core)
+  in your render tree to show the feed:
 
       use Mob.Sigil
       # in render/1:
-      {MobCamera.preview(facing: :back)}
+      {Mob.UI.camera_preview(facing: :back)}
   """
 
   @doc """
@@ -70,21 +70,8 @@ defmodule MobCamera do
   end
 
   @doc """
-  Build a live-preview component node for the render tree. Pair with
-  `start_preview/2`, which activates the capture session the view displays.
-
-  Options:
-    - `facing: :back | :front` (default `:back`)
-  """
-  @spec preview(keyword()) :: map()
-  def preview(opts \\ []) do
-    facing = Keyword.get(opts, :facing, :back)
-    Mob.UI.native_view(MobCamera.PreviewView, facing: facing)
-  end
-
-  @doc """
-  Start a live camera preview session. Pair with a `preview/1` component in your
-  render tree to display the feed.
+  Start a live camera preview session. Pair with a `Mob.UI.camera_preview/1`
+  component (in mob core) in your render tree to display the feed.
 
   Options:
     - `facing: :back | :front` (default `:back`)
