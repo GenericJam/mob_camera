@@ -15,8 +15,12 @@ defmodule MobCamera.MixProject do
   end
 
   defp deps do
+    # Local path deps while the plugin system is dogfooded; switch :mob to the
+    # Hex constraint ("~> 0.6") when mob publishes. :mob_dev is test-only (the
+    # manifest tests run the real pre-publish validator) and never ships.
     [
-      {:mob, "~> 0.6"}
+      {:mob, path: "../mob"},
+      {:mob_dev, path: "../mob_dev", only: [:dev, :test], runtime: false}
     ]
   end
 end
