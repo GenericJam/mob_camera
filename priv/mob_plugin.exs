@@ -43,11 +43,11 @@
       "androidx.camera:camera-lifecycle:1.3.4",
       "androidx.camera:camera-view:1.3.4"
     ]
-    # TODO(stage-2): the Android `<uses-feature camera>` declaration and the
-    # capture FileProvider (`<provider>` + res/xml/file_provider_paths.xml) are
-    # AndroidManifest fragments the plugin manifest can't yet contribute. Either
-    # add a manifest-fragment capability to the plugin system, or keep them in
-    # the host template gated on mob_camera. Decision tracked in EXTRACTION.md.
+    # The capture FileProvider + <uses-feature camera> are AndroidManifest
+    # fragments the plugin manifest can't yet contribute (Stage-2 decision,
+    # tracked in EXTRACTION.md). Declared in :host_requirements below so every
+    # native build reminds the host author; mob_new-generated apps already
+    # carry the FileProvider in their template.
   },
   ios: %{
     frameworks: ["AVFoundation", "Photos", "MobileCoreServices"],
@@ -56,5 +56,14 @@
       # NSMicrophoneUsageDescription stays in core (audio); video capture relies
       # on it but core/mob_audio declares it.
     }
-  }
+  },
+  # Manual host-app steps the build can't automate; printed as a warning on
+  # every `mix mob.deploy --native` of the host. mob_new-generated apps already
+  # satisfy this via their template AndroidManifest.
+  host_requirements: [
+    "Photo/video capture saves through a FileProvider: AndroidManifest.xml must " <>
+      ~s(declare <provider android:name="androidx.core.content.FileProvider" ...> ) <>
+      "with res/xml/file_provider_paths.xml (mob_new-generated apps include it; " <>
+      "hand-rolled hosts must add it or capture returns cancelled)."
+  ]
 }

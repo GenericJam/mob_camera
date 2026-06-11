@@ -37,6 +37,12 @@ defmodule MobCameraTest do
       refute Enum.any?(m.permissions, &(&1.capability == :microphone))
     end
 
+    test "declares the FileProvider host requirement for non-template hosts",
+         %{manifest: m} do
+      assert [req] = m.host_requirements
+      assert req =~ "FileProvider"
+    end
+
     test "every native source dir + Kotlin bridge the manifest references exists",
          %{manifest: m} do
       for %{native_dir: dir} <- m.nifs do
