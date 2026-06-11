@@ -54,10 +54,14 @@ defmodule MobCameraTest do
   end
 
   describe "NIF stub agreement" do
+    # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "the manifest NIF module is the shipped .erl stub and loads on the host" do
       assert Code.ensure_loaded?(:mob_camera_nif)
     end
 
+    # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "every NIF the public API calls is exported by the stub at the right arity" do
       exports = :mob_camera_nif.module_info(:exports)
 
@@ -73,6 +77,8 @@ defmodule MobCameraTest do
       end
     end
 
+    # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "host (no native linked) falls back to nif_not_loaded, not a load crash" do
       assert_raise ErlangError, ~r/nif_not_loaded/, fn ->
         :mob_camera_nif.camera_stop_preview()
@@ -104,7 +110,12 @@ defmodule MobCameraTest do
     end
 
     test "the opts map round-trips through :json (what the NIF actually receives)" do
-      decoded = MobCamera.frame_stream_opts([]) |> :json.encode() |> IO.iodata_to_binary() |> :json.decode()
+      decoded =
+        MobCamera.frame_stream_opts([])
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+        |> :json.decode()
+
       assert decoded["format"] == "rgb_f32"
       assert decoded["width"] == 640
     end
