@@ -6,7 +6,7 @@ following the `mob_location` template. Staged across turns.
 ## Status
 
 - [x] **Stage 1a — package + Elixir + manifest** (this commit): `mix.exs`,
-  `lib/mob_camera.ex` (full `MobCamera` API: capture_photo/video, preview/1,
+  `lib/mob_camera.ex` (full `MobCamera` API: capture_photo/video, preview/1 *(later descoped — see below; the shipped API is start_preview/stop_preview with the view staying in core)*,
   start/stop_preview, start/stop_frame_stream, frame_stream_opts — parity with
   the old `Mob.Camera` + `Mob.UI.camera_preview`), `src/mob_camera_nif.erl`
   (6 NIF stubs), `priv/mob_plugin.exs` (manifest spec).
