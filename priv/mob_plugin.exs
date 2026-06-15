@@ -4,6 +4,12 @@
   plugin_spec_version: 1,
   description:
     "Native camera capture, live preview, and frame streaming — extracted from mob core in Wave 2",
+  # A sample screen the host can navigate to by route (auto-listed by a home
+  # that enumerates Mob.Plugins.screens/0). Pure-Elixir + hot-pushable; drop it
+  # and this entry in a real app that builds its own UI.
+  screens: [
+    %{module: MobCamera.DemoScreen, default_route: "/mob_camera/demo"}
+  ],
   nifs: [
     # iOS: Objective-C NIF — UIImagePickerController capture, a shared
     # AVCaptureSession for preview + frame streaming (vImage resize/convert),

@@ -15,8 +15,10 @@ defmodule MobCameraTest do
       assert {:ok, ^m} = Manifest.validate(m)
     end
 
-    test "classifies as tier 1 (NIF plugin)", %{manifest: m} do
-      assert Manifest.tier(m) == 1
+    test "classifies as tier 3 (NIF + a demo screen)", %{manifest: m} do
+      # The capability NIF alone is tier 1; the bundled demo screen (a tier-3
+      # :screens section) lifts it to 3. tier/1 reports the highest section.
+      assert Manifest.tier(m) == 3
     end
 
     test "passes the full pre-publish validator (paths, NIF modules, permissions)",
