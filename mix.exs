@@ -9,6 +9,7 @@ defmodule MobCamera.MixProject do
       version: "0.1.1",
       elixir: "~> 1.17",
       deps: deps(),
+      aliases: aliases(),
       description:
         "Native camera capture, live preview, and frame streaming for Mob apps (extracted from mob core)",
       package: package(),
@@ -22,6 +23,13 @@ defmodule MobCamera.MixProject do
 
   def application do
     [extra_applications: [:logger]]
+  end
+
+  defp aliases do
+    # `mix setup` after cloning installs deps and activates the shared git
+    # hooks (.githooks): format / Credo --strict / compile run on every push
+    # and the full suite when mix.exs changes — the same gate CI enforces.
+    [setup: ["deps.get", "cmd git config core.hooksPath .githooks"]]
   end
 
   defp deps do
