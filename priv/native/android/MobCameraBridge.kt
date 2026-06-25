@@ -110,26 +110,33 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
                 nativeDeliverCameraCancelled(pid)
                 return
             }
-        val owner =
-            activity as? ActivityResultRegistryOwner ?: run {
-                nativeDeliverCameraCancelled(pid)
-                return
-            }
-        val outUri = captureUri(activity, video)
-        val contract =
-            if (video) {
-                ActivityResultContracts.CaptureVideo()
-            } else {
-                ActivityResultContracts.TakePicture()
-            }
-        val key = "mob_camera_capture_${captureSeq.incrementAndGet()}"
-        var launcher: ActivityResultLauncher<Uri>? = null
-        launcher =
-            owner.activityResultRegistry.register(key, contract) { ok: Boolean ->
-                onCaptureResult(if (ok) outUri else null, video)
-                launcher?.unregister()
-            }
-        launcher.launch(outUri)
+        // ActivityResultRegistry.register() and launcher.launch() must run on the
+        // Android main thread. launchCapture is invoked from the camera NIF on a BEAM
+        // scheduler thread, so registering/launching directly here throws
+        // IllegalStateException (or wedges the UI toolkit). Hop to the UI thread for
+        // the registration + launch.
+        activity.runOnUiThread {
+            val owner =
+                activity as? ActivityResultRegistryOwner ?: run {
+                    nativeDeliverCameraCancelled(pid)
+                    return@runOnUiThread
+                }
+            val outUri = captureUri(activity, video)
+            val contract =
+                if (video) {
+                    ActivityResultContracts.CaptureVideo()
+                } else {
+                    ActivityResultContracts.TakePicture()
+                }
+            val key = "mob_camera_capture_${captureSeq.incrementAndGet()}"
+            var launcher: ActivityResultLauncher<Uri>? = null
+            launcher =
+                owner.activityResultRegistry.register(key, contract) { ok: Boolean ->
+                    onCaptureResult(if (ok) outUri else null, video)
+                    launcher?.unregister()
+                }
+            launcher.launch(outUri)
+        }
     }
 
     internal fun onCaptureResult(

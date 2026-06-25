@@ -55,6 +55,32 @@ defmodule MobCameraTest do
     end
   end
 
+  describe "android capture threading (regression)" do
+    # The camera NIF callback arrives on a BEAM scheduler thread, but
+    # ActivityResultRegistry.register() + launcher.launch() MUST run on the Android
+    # main thread — off-thread they throw IllegalStateException / wedge the UI toolkit,
+    # and the host app appears to hang on "Take Photo" (seen in GenericJam/sloppy_joe).
+    # launchCapture must hop to the UI thread for BOTH the registration and the launch.
+    # Source-level because JNI threading isn't exercisable from mix test (see CLAUDE.md).
+    setup do
+      {:ok, m} = Manifest.load(@plugin_dir)
+      %{src: File.read!(Path.join(@plugin_dir, m.android.bridge_kt))}
+    end
+
+    test "registers + launches the ActivityResult inside runOnUiThread", %{src: src} do
+      assert src =~ "runOnUiThread", "camera capture must hop to the Android main thread"
+
+      # Everything after the hop: both the register and the launch must live inside it.
+      [_before, after_hop] = String.split(src, "runOnUiThread", parts: 2)
+
+      assert after_hop =~ "activityResultRegistry.register",
+             "register() must run inside runOnUiThread"
+
+      assert after_hop =~ "launcher.launch",
+             "launch() must run inside runOnUiThread"
+    end
+  end
+
   describe "NIF stub agreement" do
     # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
