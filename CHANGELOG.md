@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.3] - 2026-06-24
+
+### Fixed
+- **Taking a photo no longer wedges the app on Android.** `launchCapture`
+  arrives on a BEAM scheduler thread, but `ActivityResultRegistry.register()`
+  and `ActivityResultLauncher.launch()` must run on the Android main thread
+  (off-thread they throw `IllegalStateException` / wedge the UI toolkit, so the
+  host froze on "Take Photo"). Both now run inside `activity.runOnUiThread`.
+  Source-contract regression test; device-verified on a Moto G power 5G. (#1)
+
+### Security
+- Bumped `plug` 1.19.2 → 1.20.1 (dev/test-only transitive via `mob_dev`),
+  clearing EEF-CVE-2026-54892 (quadratic-time nested-param decoding DoS).
+  Lockfile-only; does not ship in the package.
+
+---
+
 ## [0.1.2] - 2026-06-16
 
 ### Changed
