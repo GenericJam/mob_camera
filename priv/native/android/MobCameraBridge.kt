@@ -233,9 +233,14 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
         frameStreamRev.incrementAndGet()
     }
 
-    // Called from the CameraX analyzer thread (by MobCameraPreview).
-    internal fun deliverFrame(image: ImageProxy) {
+    // Called from the CameraX analyzer thread. Public + @JvmStatic so the
+    // camera-preview native view (in the app module) can hand it each frame
+    // without a compile-time dependency on this plugin. Self-gates on
+    // frameStreamActive, so binding an ImageAnalysis unconditionally is safe:
+    // frames are dropped (and the image closed) until start_frame_stream runs.
+    @JvmStatic fun deliverFrame(image: ImageProxy) {
         try {
+            if (!frameStreamActive) return
             val now = System.currentTimeMillis()
             if (frameStreamThrottleMs > 0 && (now - lastDeliveryMs) < frameStreamThrottleMs.toLong()) {
                 droppedCount++
