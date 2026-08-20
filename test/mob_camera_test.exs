@@ -173,7 +173,8 @@ defmodule MobCameraTest do
     "Long" => "JLong",
     "ByteArray" => "JByteArray",
     "Int" => "JInt",
-    "String" => "JString"
+    "String" => "JString",
+    "Double" => "JDouble"
   }
 
   # each param is `name: Type,` — capture the Type (allow a `jni.`/`*` prefix in zig).
@@ -232,6 +233,45 @@ defmodule MobCameraTest do
 
       refute block =~ ~r/\[\*\](?:const )?u8/,
              "byte[] must be read via GetByteArrayRegion, not a `[*]const u8` slot"
+    end
+  end
+
+  defp zig_file_params(zig) do
+    [_, block] =
+      Regex.run(
+        ~r/export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFile\((.*?)\)\s*callconv/s,
+        zig
+      )
+
+    block
+  end
+
+  describe "nativeDeliverCameraFile JNI contract (MOB-68 regression)" do
+    # Same failure class as MOB-41 above, one level over: MOB-68 extended this
+    # export with width/height/durationSeconds to fix the missing result-map
+    # fields, and JNI's name-only binding means any future edit to either side
+    # (Kotlin `external fun` or the zig `export fn`) without the other is a
+    # silent slot-shift, not a compile error.
+    setup do
+      {:ok, m} = Manifest.load(@plugin_dir)
+
+      %{
+        kt: File.read!(Path.join(@plugin_dir, m.android.bridge_kt)),
+        zig: File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_camera_nif.zig"))
+      }
+    end
+
+    test "the zig export matches the Kotlin external fun slot-for-slot", %{kt: kt, zig: zig} do
+      [_, kt_block] = Regex.run(~r/external fun nativeDeliverCameraFile\((.*?)\)/s, kt)
+      kt_types = param_types(kt_block)
+
+      zig_types = zig |> zig_file_params() |> param_types() |> Enum.drop(2)
+
+      assert length(zig_types) == length(kt_types),
+             "arity mismatch: Kotlin declares #{length(kt_types)} params, zig export has " <>
+               "#{length(zig_types)} params"
+
+      assert Enum.map(kt_types, &Map.fetch!(@kt_to_zig, &1)) == zig_types
     end
   end
 end

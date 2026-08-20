@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.5] - 2026-08-20
+
+### Fixed
+- **Android capture result map was missing `:width`/`:height` (photo) and
+  `:duration` (video), contradicting the documented shapes.**
+  `nativeDeliverCameraFile` only ever built `%{path: p}`, so the
+  `{:camera, :photo, %{path:, width:, height:}}` / `{:camera, :video,
+  %{path:, duration:}}` clauses shown in the README and moduledoc could never
+  match on Android — any `handle_info` written against the docs raised
+  `FunctionClauseError` and crashed the screen GenServer. iOS already
+  included these fields, making this a silent platform asymmetry. Fixed by
+  having `MobCameraBridge.kt` decode the captured file (`BitmapFactory`
+  bounds for photo dimensions, `MediaMetadataRetriever` duration for video,
+  converted from ms to seconds) and extending `nativeDeliverCameraFile`'s
+  JNI signature to carry `width`/`height`/`duration_seconds` through to the
+  Zig NIF, which now builds the kind-appropriate map. Device-verified on a
+  physical Moto G Power (2021): photo delivered real `width: 4000, height:
+  3000`; video delivered real `duration: 30.104`. (MOB-68)
+
 ## [0.1.4] - 2026-08-19
 
 ### Fixed

@@ -26,7 +26,9 @@ package io.mob.camera
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
@@ -60,10 +62,16 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
     )
 
     // Capture result: path -> {:camera, :photo|:video, %{path,...}}; kind=="cancelled" -> {:camera, :cancelled}
+    // width/height are the decoded photo bounds (0 for a video call); durationSeconds
+    // is the video length (0.0 for a photo call). One signature covers both kinds —
+    // the Zig side picks which fields to include in the map based on `kind`.
     @JvmStatic external fun nativeDeliverCameraFile(
         pid: Long,
         kind: String,
         path: String,
+        width: Int,
+        height: Int,
+        durationSeconds: Double,
     )
 
     @JvmStatic external fun nativeDeliverCameraCancelled(pid: Long)
@@ -154,11 +162,41 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
                 val ext = if (video) "mp4" else "jpg"
                 val tmp = File(activity.cacheDir, "mob_cam_${System.currentTimeMillis()}.$ext")
                 activity.contentResolver.openInputStream(uri)?.use { it.copyTo(tmp.outputStream()) }
-                nativeDeliverCameraFile(pid, if (video) "video" else "photo", tmp.absolutePath)
+                if (video) {
+                    val durationSeconds = videoDurationSeconds(tmp.absolutePath)
+                    nativeDeliverCameraFile(pid, "video", tmp.absolutePath, 0, 0, durationSeconds)
+                } else {
+                    val (w, h) = photoDimensions(tmp.absolutePath)
+                    nativeDeliverCameraFile(pid, "photo", tmp.absolutePath, w, h, 0.0)
+                }
             } catch (e: Exception) {
                 nativeDeliverCameraCancelled(pid)
             }
         }.start()
+    }
+
+    // BitmapFactory.Options.inJustDecodeBounds reads only the image header, not the
+    // pixel data — cheap even for a large photo. Falls back to 0x0 rather than
+    // throwing if the file is somehow undecodable; the caller still gets its path.
+    private fun photoDimensions(path: String): Pair<Int, Int> {
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, opts)
+        return Pair(opts.outWidth.coerceAtLeast(0), opts.outHeight.coerceAtLeast(0))
+    }
+
+    // MediaMetadataRetriever.METADATA_KEY_DURATION is milliseconds as a string;
+    // "duration" everywhere else in this bridge (and on iOS) is seconds.
+    private fun videoDurationSeconds(path: String): Double {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            ms / 1000.0
+        } catch (e: Exception) {
+            0.0
+        } finally {
+            retriever.release()
+        }
     }
 
     internal fun captureUri(

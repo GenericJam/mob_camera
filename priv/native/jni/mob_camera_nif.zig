@@ -146,13 +146,21 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFrame(
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
-// Capture result: kind = "photo" | "video"; builds {:camera, kind, %{path}}.
+// Capture result: kind = "photo" | "video". Builds {:camera, :photo, %{path,
+// width, height}} or {:camera, :video, %{path, duration}} — width/height/
+// duration are computed on the Kotlin side (BitmapFactory bounds / MediaMetadataRetriever)
+// and passed through here; the JNI export shape below MUST match
+// MobCameraBridge.kt's `external fun nativeDeliverCameraFile` slot-for-slot
+// (see MOB-41 for what happens when it doesn't).
 export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFile(
     jenv: *jni.JNIEnv,
     cls: jni.JClass,
     pid_long: jni.JLong,
     kind: jni.JString,
     path: jni.JString,
+    width: jni.JInt,
+    height: jni.JInt,
+    duration_seconds: jni.JDouble,
 ) callconv(.c) void {
     _ = cls;
     var pid = pidFromLong(pid_long);
@@ -169,10 +177,27 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFile(
     if (erts.enif_alloc_binary(plen, &pbin) == 0) return;
     @memcpy(pbin.data[0..plen], path_c[0..plen]);
 
-    const keys = [_]erts.ERL_NIF_TERM{erts.atom(env, "path")};
-    const vals = [_]erts.ERL_NIF_TERM{erts.enif_make_binary(env, &pbin)};
-    const map = erts.makeMap(env, &keys, &vals) orelse return;
-    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.enif_make_atom(env, kind_c), map });
+    const is_video = std.mem.eql(u8, std.mem.sliceTo(kind_c, 0), "video");
+    const map = if (is_video)
+        erts.makeMap(env, &[_]erts.ERL_NIF_TERM{
+            erts.atom(env, "path"),
+            erts.atom(env, "duration"),
+        }, &[_]erts.ERL_NIF_TERM{
+            erts.enif_make_binary(env, &pbin),
+            erts.enif_make_double(env, duration_seconds),
+        })
+    else
+        erts.makeMap(env, &[_]erts.ERL_NIF_TERM{
+            erts.atom(env, "path"),
+            erts.atom(env, "width"),
+            erts.atom(env, "height"),
+        }, &[_]erts.ERL_NIF_TERM{
+            erts.enif_make_binary(env, &pbin),
+            erts.enif_make_int(env, width),
+            erts.enif_make_int(env, height),
+        });
+    const built_map = map orelse return;
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.enif_make_atom(env, kind_c), built_map });
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
