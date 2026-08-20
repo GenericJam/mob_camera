@@ -87,27 +87,43 @@ fn callBridgeVoid(env: ?*erts.ErlNifEnv, method: jni.JMethodID) erts.ERL_NIF_TER
 
 // ── Inbound delivery — Kotlin's ImageAnalysis callback calls this ─────────
 // Builds {:camera, :frame, %{bytes, width, height, format, timestamp_ms, dropped}}.
+// JNI binds natives by name only, so this export MUST match the Kotlin
+// `external fun nativeDeliverCameraFrame(pid: Long, bytes: ByteArray, width: Int,
+// height: Int, format: String, timestampMs: Long, dropped: Long)` slot-for-slot:
+// one jbyteArray reference (NOT a pointer+length pair) and one jstring. The array
+// is copied out with GetByteArrayRegion and the format read with GetStringUTFChars,
+// mirroring the sibling nativeDeliverCameraFile below.
 export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFrame(
     jenv: *jni.JNIEnv,
     cls: jni.JClass,
     pid_long: jni.JLong,
-    bytes: [*]const u8,
-    nbytes: usize,
-    width: c_int,
-    height: c_int,
-    format: [*:0]const u8,
+    bytes: jni.JByteArray,
+    width: jni.JInt,
+    height: jni.JInt,
+    format: jni.JString,
     timestamp_ms: jni.JLong,
     dropped: jni.JLong,
 ) callconv(.c) void {
-    _ = jenv;
     _ = cls;
+    if (bytes == null or format == null) return;
     var pid = pidFromLong(pid_long);
     const env = erts.enif_alloc_env() orelse return;
     defer erts.enif_free_env(env);
 
+    // Read the format jstring first — before allocating the binary — so an early
+    // return can never leak the binary (matches nativeDeliverCameraFile ordering).
+    const format_c = jenv.*.GetStringUTFChars.?(jenv, format, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, format, format_c);
+
+    // Copy the Java byte[] out via the typed GetByteArrayRegion (no pin/release).
+    const nbytes_j: jni.JInt = jenv.*.GetArrayLength.?(jenv, bytes);
+    if (nbytes_j < 0) return;
+    const nbytes: usize = @intCast(nbytes_j);
     var pix: erts.ErlNifBinary = undefined;
     if (erts.enif_alloc_binary(nbytes, &pix) == 0) return;
-    @memcpy(pix.data[0..nbytes], bytes[0..nbytes]);
+    if (nbytes_j > 0) {
+        jenv.*.GetByteArrayRegion.?(jenv, bytes, 0, nbytes_j, @ptrCast(pix.data));
+    }
 
     const keys = [_]erts.ERL_NIF_TERM{
         erts.atom(env, "bytes"),
@@ -119,9 +135,9 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFrame(
     };
     const vals = [_]erts.ERL_NIF_TERM{
         erts.enif_make_binary(env, &pix),
-        erts.enif_make_int(env, width),
-        erts.enif_make_int(env, height),
-        erts.enif_make_atom(env, format),
+        erts.enif_make_int(env, @intCast(width)),
+        erts.enif_make_int(env, @intCast(height)),
+        erts.enif_make_atom(env, format_c),
         erts.enif_make_int64(env, timestamp_ms),
         erts.enif_make_int64(env, dropped),
     };

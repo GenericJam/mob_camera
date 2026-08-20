@@ -166,4 +166,72 @@ defmodule MobCameraTest do
       end
     end
   end
+
+  # ── nativeDeliverCameraFrame JNI-contract helpers (module scope) ──────────
+  # Kotlin: `Long`/`ByteArray`/`Int`/`String` ⇄ zig JNI: `JLong`/`JByteArray`/`JInt`/`JString`.
+  @kt_to_zig %{
+    "Long" => "JLong",
+    "ByteArray" => "JByteArray",
+    "Int" => "JInt",
+    "String" => "JString"
+  }
+
+  # each param is `name: Type,` — capture the Type (allow a `jni.`/`*` prefix in zig).
+  defp param_types(block) do
+    ~r/\w+\s*:\s*\*?(?:jni\.)?([A-Za-z]\w*)/
+    |> Regex.scan(block)
+    |> Enum.map(fn [_, t] -> t end)
+  end
+
+  defp zig_frame_params(zig) do
+    [_, block] =
+      Regex.run(
+        ~r/export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraFrame\((.*?)\)\s*callconv/s,
+        zig
+      )
+
+    block
+  end
+
+  describe "nativeDeliverCameraFrame JNI contract (MOB-41 regression)" do
+    # JNI binds natives by NAME only, so the zig export's parameter list must
+    # match the Kotlin `external fun` slot-for-slot (after the JNIEnv*/jclass
+    # prefix). MOB-41: the byte[] param was declared as a `[*]const u8, usize`
+    # pointer+length PAIR, shifting every later arg by one slot — the format
+    # jstring landed in the timestamp slot and was deref'd as a C string →
+    # guaranteed SIGSEGV on the first delivered frame. Source-level because the
+    # JNI boundary isn't exercisable from `mix test` (see the sibling regressions
+    # above and CLAUDE.md).
+    setup do
+      {:ok, m} = Manifest.load(@plugin_dir)
+
+      %{
+        kt: File.read!(Path.join(@plugin_dir, m.android.bridge_kt)),
+        zig: File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_camera_nif.zig"))
+      }
+    end
+
+    test "the zig export matches the Kotlin external fun slot-for-slot", %{kt: kt, zig: zig} do
+      [_, kt_block] = Regex.run(~r/external fun nativeDeliverCameraFrame\((.*?)\)/s, kt)
+      kt_types = param_types(kt_block)
+
+      # Drop the JNIEnv* + jclass the JVM prepends; the rest must line up 1:1.
+      zig_types = zig |> zig_frame_params() |> param_types() |> Enum.drop(2)
+
+      assert length(zig_types) == length(kt_types),
+             "arity mismatch: Kotlin declares #{length(kt_types)} params, zig export has " <>
+               "#{length(zig_types)} (a JByteArray must be ONE slot, not a ptr+len pair)"
+
+      assert Enum.map(kt_types, &Map.fetch!(@kt_to_zig, &1)) == zig_types
+    end
+
+    test "the byte[] param is a single JByteArray, never a raw pointer+length", %{zig: zig} do
+      block = zig_frame_params(zig)
+
+      assert block =~ "jni.JByteArray"
+
+      refute block =~ ~r/\[\*\](?:const )?u8/,
+             "byte[] must be read via GetByteArrayRegion, not a `[*]const u8` slot"
+    end
+  end
 end
