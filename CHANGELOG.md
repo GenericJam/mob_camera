@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.4] - 2026-08-19
+
+### Fixed
+- **Guaranteed native crash (SIGSEGV) on the first delivered camera frame on
+  Android.** The `nativeDeliverCameraFrame` zig export declared a raw
+  `[*]const u8, usize` pointer+length pair for what Kotlin's `external fun`
+  declares as a single `ByteArray` — JNI binds natives by name only, so every
+  argument after `bytes` shifted one slot: `nbytes` received `width`, and
+  `format` received the `timestampMs` value, later dereferenced as a C string
+  via `enif_make_atom`. Fixed to match the Kotlin signature slot-for-slot (a
+  `jbyteArray` copied via `GetByteArrayRegion`, a `jstring` read via
+  `GetStringUTFChars`), mirroring the sibling `nativeDeliverCameraFile`
+  export. Was latent — nothing on Android drives `deliverFrame` yet — but
+  guaranteed to crash the instant anything does. Source-contract regression
+  test added; device-verified on a physical Moto G Power (2021). (MOB-41, #2)
+
 ## [0.1.3] - 2026-06-24
 
 ### Fixed
