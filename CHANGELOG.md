@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.6] - 2026-08-20
+
+### Fixed
+- **iOS `stop_preview` left `g_camera_input`/`g_camera_facing`/`g_frame_output`/
+  `g_frame_delegate` stale, and mutated the shared session globals on the main
+  queue instead of the serial queue everything else uses — a silent black
+  preview on the next `start_preview`/`start_frame_stream`.**
+  `nif_camera_stop_preview` only nilled `g_preview_session`, on
+  `dispatch_get_main_queue()`, while `mob_camera_ensure_session` (and
+  `start_frame_stream`) mutate the other four globals on the serial
+  `mob_camera_queue()` — a cross-queue race. Worse, leaving `g_camera_input`
+  non-nil meant the next `ensure_session` call with the same facing hit its
+  fast path (`g_camera_input && [g_camera_facing isEqualToString:facing]`)
+  and returned success without ever adding an input to the freshly-created
+  session. Fixed by moving the teardown onto `mob_camera_queue()` and nilling
+  all five session-identity globals together. Added a source-level
+  regression test asserting both properties. Device-verified on a physical
+  iPhone SE (3rd gen): starting preview, stopping, and starting again now
+  shows a live feed both times (previously black the second time).
+  (MOB-67)
+
 ## [0.1.5] - 2026-08-20
 
 ### Fixed

@@ -179,6 +179,13 @@ static AVCaptureDeviceInput *g_camera_input = nil;
 static NSString *g_camera_facing = nil;
 static dispatch_queue_t g_camera_queue = NULL;
 
+// Frame-stream output + delegate globals — declared here (rather than next
+// to MobFrameDelegate below) because nif_camera_stop_preview must nil them
+// out alongside the preview-session globals above.
+@class MobFrameDelegate;
+static AVCaptureVideoDataOutput *g_frame_output = nil;
+static MobFrameDelegate *g_frame_delegate = nil;
+
 static dispatch_queue_t mob_camera_queue(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -269,11 +276,26 @@ static ERL_NIF_TERM nif_camera_start_preview(ErlNifEnv *env, int argc, const ERL
 }
 
 static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Teardown must run on mob_camera_queue() — the same serial queue
+    // mob_camera_ensure_session and start_frame_stream mutate g_camera_input/
+    // g_camera_facing/g_frame_output/g_frame_delegate on. Running it on the
+    // main queue instead (as before) raced those mutations, and leaving the
+    // four globals non-nil meant the next ensure_session's fast path
+    // (`g_camera_input && [g_camera_facing isEqualToString:facing]`) matched
+    // against an input that belonged to the now-discarded session and
+    // returned YES without ever adding an input to the new one — a silent
+    // black preview.
+    dispatch_async(mob_camera_queue(), ^{
       AVCaptureSession *old = g_preview_session;
       g_preview_session = nil;
-      [[NSNotificationCenter defaultCenter] postNotificationName:@"MobCameraSessionChanged"
-                                                          object:nil];
+      g_camera_input = nil;
+      g_camera_facing = nil;
+      g_frame_output = nil;
+      g_frame_delegate = nil;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"MobCameraSessionChanged"
+                                                            object:nil];
+      });
       // Stop the session off the main queue so we don't block the UI.
       if (old)
           dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -463,9 +485,9 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
 
 // Frame stream output + delegate attach to the shared g_preview_session.
 // AVCaptureVideoDataOutput does NOT retain its delegate, so g_frame_delegate
-// is the canonical strong reference that keeps it alive.
-static AVCaptureVideoDataOutput *g_frame_output = nil;
-static MobFrameDelegate *g_frame_delegate = nil;
+// is the canonical strong reference that keeps it alive. (g_frame_output/
+// g_frame_delegate themselves are declared up near g_preview_session — see
+// the comment there.)
 static dispatch_queue_t g_frame_delivery_queue = NULL;
 
 static ERL_NIF_TERM nif_camera_start_frame_stream(ErlNifEnv *env, int argc,

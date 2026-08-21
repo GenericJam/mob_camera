@@ -81,6 +81,53 @@ defmodule MobCameraTest do
     end
   end
 
+  describe "iOS stop_preview teardown (MOB-67 regression)" do
+    # stop_preview used to nil only g_preview_session, and to do it on the main
+    # queue while mob_camera_ensure_session mutates g_camera_input/g_camera_facing/
+    # g_frame_output/g_frame_delegate on the serial mob_camera_queue(). That left
+    # a stale, non-nil g_camera_input pointing at the discarded session's input:
+    # the next ensure_session's fast path (`g_camera_input && facing matches`)
+    # returned YES without ever adding an input to the NEW session — a silent
+    # black preview. Source-level because AVCaptureSession state isn't
+    # exercisable from `mix test` (see CLAUDE.md).
+    setup do
+      %{src: File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_camera_nif.m"))}
+    end
+
+    defp stop_preview_body(src) do
+      [_, body] =
+        Regex.run(
+          ~r/nif_camera_stop_preview\(ErlNifEnv \*env, int argc, const ERL_NIF_TERM argv\[\]\) \{(.*?)\n\}/s,
+          src
+        )
+
+      body
+    end
+
+    test "teardown runs on mob_camera_queue(), not the main queue", %{src: src} do
+      body = stop_preview_body(src)
+
+      assert body =~ "dispatch_async(mob_camera_queue()",
+             "stop_preview must serialize its teardown on the same queue " <>
+               "mob_camera_ensure_session mutates the session globals on"
+
+      refute String.trim(body) =~ ~r/^dispatch_async\(dispatch_get_main_queue\(\)/,
+             "teardown must not mutate the session globals directly on the main queue"
+    end
+
+    test "nils every session-identity global, not just g_preview_session", %{src: src} do
+      body = stop_preview_body(src)
+
+      for global <-
+            ~w(g_preview_session g_camera_input g_camera_facing g_frame_output g_frame_delegate) do
+        assert body =~ "#{global} = nil;",
+               "#{global} must be nilled in stop_preview, or the next ensure_session's " <>
+                 "fast path matches stale state and silently skips adding an input " <>
+                 "to the new session"
+      end
+    end
+  end
+
   describe "NIF stub agreement" do
     # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
