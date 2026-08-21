@@ -4,8 +4,22 @@ Native camera capture, live preview, and frame streaming for apps built with
 [Mob](https://hexdocs.pm/mob) — `Mob.Camera`, extracted from mob core as a plugin.
 
 iOS: `UIImagePickerController` + a shared `AVCaptureSession` (vImage frame
-conversion). Android: `TakePicture`/`CaptureVideo` activity contracts + CameraX
-`ImageAnalysis`.
+conversion). Android: `TakePicture`/`CaptureVideo` activity contracts.
+
+## Platform support
+
+| Feature | iOS | Android |
+|---|---|---|
+| `capture_photo/2`, `capture_video/2` | ✅ | ✅ |
+| `start_preview/2` + `Mob.UI.camera_preview/1` | ✅ live feed | ⏳ accepted, renders nothing |
+| `start_frame_stream/2` | ✅ delivers frames | ⏳ accepted, delivers nothing |
+
+Capture works fully on both platforms today. Live preview and frame streaming
+are **iOS-only** for now — on Android, `start_preview/2` and
+`start_frame_stream/2` return successfully and track state, but nothing binds
+a CameraX `ImageAnalysis`/`Preview` use case to that state, so no frame is
+ever delivered and the preview view stays blank. No error is raised; see
+[Limits](#limits) for why and what's blocking it.
 
 ## Installation
 
@@ -36,7 +50,8 @@ def handle_info({:camera, :cancelled}, socket), do: ...
 
 `path` is a local temp file — copy it elsewhere before the next capture.
 
-For real-time work (object detection, AR, custom filters), stream frames:
+For real-time work (object detection, AR, custom filters), stream frames
+(**iOS only** — see [Platform support](#platform-support)):
 
 ```elixir
 socket = MobCamera.start_frame_stream(socket, width: 640, height: 640, format: :rgb_f32)
@@ -52,7 +67,8 @@ Resize + format conversion happen natively, and late frames are dropped
 natively, so the BEAM mailbox stays bounded. Other options: `format: :bgra_u8`,
 `facing: :front`, `throttle_ms:`. Stop with `MobCamera.stop_frame_stream/1`.
 
-Live preview pairs a session from this plugin with a view component from core:
+Live preview pairs a session from this plugin with a view component from core
+(**iOS only** — see [Platform support](#platform-support)):
 
 ```elixir
 socket = MobCamera.start_preview(socket, facing: :back)
@@ -69,11 +85,21 @@ hand-rolled hosts must add it or capture returns `:cancelled`.
 
 ## Limits
 
+- **Android live preview and frame streaming are not implemented — only
+  state tracking is.** `camera_start_preview`/`camera_start_frame_stream` in
+  `MobCameraBridge.kt` set fields and bump a revision counter; nothing binds
+  a CameraX `Preview`/`ImageAnalysis` use case to the capture session, so
+  `deliverFrame` (which would forward pixel data to the BEAM) is never
+  called. `start_preview/2` and `start_frame_stream/2` both return
+  successfully — there is no error, the calls just have no effect on
+  Android. Capture (`capture_photo/2`, `capture_video/2`) is unaffected and
+  fully implemented on both platforms.
 - The preview *view* node (`Mob.UI.camera_preview/1`) stays in mob core for
   now — this plugin owns the session (`start_preview/2` / `stop_preview/1`).
-  Moving the view here waits on the plugin native-view capability.
+  Moving the view here, and wiring the Android CameraX binding above, both
+  wait on the plugin native-view capability.
 - Frame size is capped at ~4 MP; mismatched aspect ratios are center-cropped
-  on the long axis before scaling.
+  on the long axis before scaling. (iOS only — see above.)
 
 ## Development
 

@@ -20,10 +20,18 @@ defmodule MobCamera do
 
   iOS: `UIImagePickerController`. Android: `TakePicture` / `CaptureVideo` activity contracts.
 
+  ## Platform support
+
+  Capture (`capture_photo/2`, `capture_video/2`) is fully implemented on both
+  platforms. Live preview (`start_preview/2`) and frame streaming
+  (`start_frame_stream/2`) are **iOS-only** for now — see the `@doc` on each
+  and the README's Limits section for why.
+
   ## Live frame stream
 
   For real-time work (object detection, AR, custom filters) `start_frame_stream/2`
-  delivers per-frame pixel data as messages:
+  delivers per-frame pixel data as messages (**iOS only** — see Platform
+  support above):
 
       handle_info({:camera, :frame, %{bytes: bin, width: w, height: h,
                                        format: :rgb_f32,
@@ -36,7 +44,8 @@ defmodule MobCamera do
   ## Live preview
 
   Pair `start_preview/2` with a `Mob.UI.camera_preview/1` component (in mob core)
-  in your render tree to show the feed:
+  in your render tree to show the feed (**iOS only** — see Platform support
+  above):
 
       use Mob.Sigil
       # in render/1:
@@ -73,6 +82,11 @@ defmodule MobCamera do
   Start a live camera preview session. Pair with a `Mob.UI.camera_preview/1`
   component (in mob core) in your render tree to display the feed.
 
+  **iOS only.** On Android this returns successfully and tracks the
+  requested facing, but nothing binds a CameraX use case to the session yet,
+  so the preview view stays blank — see the module's Platform support
+  section and the README's Limits section.
+
   Options:
     - `facing: :back | :front` (default `:back`)
   """
@@ -91,8 +105,14 @@ defmodule MobCamera do
   end
 
   @doc """
-  Start streaming camera frames to the calling process. Frames arrive as
-  messages of shape:
+  Start streaming camera frames to the calling process.
+
+  **iOS only.** On Android this returns successfully and tracks the
+  requested options, but nothing binds a CameraX `ImageAnalysis` use case to
+  the session yet, so no `{:camera, :frame, _}` message is ever delivered —
+  see the module's Platform support section and the README's Limits section.
+
+  Frames arrive as messages of shape:
 
       handle_info({:camera, :frame, %{
         bytes:        binary(),      # pixel data, format-dependent

@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.7] - 2026-08-21
+
+### Docs
+- **README and moduledoc presented Android live preview and frame
+  streaming as working, when neither is implemented.** The README's
+  opening line claimed "CameraX `ImageAnalysis`" for Android, and the
+  usage examples for `start_frame_stream/2` / `start_preview/2` were shown
+  with no platform caveat. In reality `camera_start_preview`/
+  `camera_start_frame_stream` in `MobCameraBridge.kt` only set state fields
+  and bump a revision counter — nothing binds a CameraX `Preview`/
+  `ImageAnalysis` use case to the session, so `deliverFrame` is never
+  called and no frame or preview ever reaches Android. Both calls return
+  successfully with no error, so a caller following the docs would see a
+  `FunctionClauseError`-free but silently no-op integration. Added an
+  explicit "Platform support" matrix to the README and `MobCamera`
+  moduledoc, caveated both usage examples, and expanded the Limits section
+  to name the exact gap (state tracking exists, the CameraX binding
+  doesn't) rather than only describing the preview view's core/plugin
+  split. Capture (`capture_photo/2`, `capture_video/2`) is unaffected —
+  fully implemented on both platforms. (MOB-66)
+
 ## [0.1.6] - 2026-08-20
 
 ### Fixed
