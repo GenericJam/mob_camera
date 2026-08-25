@@ -6,7 +6,7 @@ defmodule MobCamera.MixProject do
   def project do
     [
       app: :mob_camera,
-      version: "0.1.7",
+      version: "0.1.8",
       elixir: "~> 1.17",
       deps: deps(),
       aliases: aliases(),
