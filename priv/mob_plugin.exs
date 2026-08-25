@@ -45,9 +45,12 @@
     # with the SDK. These are also used by the in-core QR scanner today — gradle
     # de-dups, so both can declare them until mob_scanner is extracted.
     gradle_deps: [
-      "androidx.camera:camera-camera2:1.3.4",
-      "androidx.camera:camera-lifecycle:1.3.4",
-      "androidx.camera:camera-view:1.3.4"
+      # 1.6.1: 16 KB page-aligned libimage_processing_util_jni.so (fixed in
+      # CameraX 1.4.0+; see mob/issues.md #6). 1.3.4 predates the fix and trips
+      # the Android 15+ "not 16 KB compatible" warning.
+      "androidx.camera:camera-camera2:1.6.1",
+      "androidx.camera:camera-lifecycle:1.6.1",
+      "androidx.camera:camera-view:1.6.1"
     ]
     # The capture FileProvider + <uses-feature camera> are AndroidManifest
     # fragments the plugin manifest can't yet contribute (Stage-2 decision,
