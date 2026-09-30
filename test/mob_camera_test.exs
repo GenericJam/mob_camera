@@ -128,6 +128,73 @@ defmodule MobCameraTest do
     end
   end
 
+  describe "iOS NIF compiles warning-free against the iPhoneOS SDK (MOB-294 regression)" do
+    # The NIF used AVCaptureConnection's videoOrientation APIs, deprecated in
+    # iOS 17 — the deployment target mob_dev builds plugins for. Every host
+    # device build printed two deprecation warnings, and zig echoed the whole
+    # objc compile under a `failed command:` header on otherwise-green builds.
+    # This compiles the real source the way the plugin build does (arm64, iOS
+    # 17 floor, ARC, modules) so a new deprecated or otherwise-warning API
+    # surfaces here instead of in every consumer's build log.
+    # Only a Mac with Xcode's iPhoneOS SDK can run this; anywhere else it is
+    # skipped with the reason, never a spurious :enoent / compile failure.
+    @iphoneos_sdk_missing (cond do
+                             :os.type() != {:unix, :darwin} ->
+                               "not macOS — no iPhoneOS SDK"
+
+                             is_nil(System.find_executable("xcrun")) ->
+                               "xcrun not on PATH — install Xcode"
+
+                             match?(
+                               {_, 0},
+                               System.cmd("xcrun", ["-sdk", "iphoneos", "--show-sdk-path"],
+                                 stderr_to_stdout: true
+                               )
+                             ) ->
+                               nil
+
+                             true ->
+                               "iPhoneOS SDK not installed (xcrun -sdk iphoneos --show-sdk-path failed)"
+                           end)
+
+    @tag :macos_only
+    if @iphoneos_sdk_missing, do: @tag(skip: @iphoneos_sdk_missing)
+    # Exercises the shipped native source through the iPhoneOS toolchain, not
+    # Elixir app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "syntax-checks with zero warnings at the iOS 17 deployment target" do
+      erts_include =
+        Path.join([
+          to_string(:code.root_dir()),
+          "erts-#{:erlang.system_info(:version)}",
+          "include"
+        ])
+
+      {out, status} =
+        System.cmd(
+          "xcrun",
+          [
+            "-sdk",
+            "iphoneos",
+            "clang",
+            "-arch",
+            "arm64",
+            "-miphoneos-version-min=17.0",
+            "-fobjc-arc",
+            "-fmodules",
+            "-fsyntax-only",
+            "-I",
+            erts_include,
+            Path.join(@plugin_dir, "priv/native/ios/mob_camera_nif.m")
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, "mob_camera_nif.m failed to compile:\n#{out}"
+      refute out =~ "warning:", "mob_camera_nif.m compiled with warnings:\n#{out}"
+    end
+  end
+
   describe "NIF stub agreement" do
     # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest

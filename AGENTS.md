@@ -54,7 +54,7 @@ mix test
 
 The suite is manifest + pure-Elixir contract tests: it round-trips `Manifest.validate/1`, runs the full `Validator.validate_plugin/2` (paths, NIF modules, permissions), asserts the cross-platform NIF pattern (one module, two platforms, `:objc` + `:zig`), and asserts `:camera` is owned here while `:microphone` is not.
 
-Native changes (`.m` / `.zig` / `.kt`) are NOT exercised by `mix test`. They need `mix mob.deploy --native` of a host app plus a physical-device check before committing — iOS simulator will show a preview but obscures capture path handling; Android emulator masks the OEM camera-service quirks (Moto G is the reference device).
+Native changes (`.m` / `.zig` / `.kt`) are NOT exercised at runtime by `mix test`. They need `mix mob.deploy --native` of a host app plus a physical-device check before committing — iOS simulator will show a preview but obscures capture path handling; Android emulator masks the OEM camera-service quirks (Moto G is the reference device). The one native check `mix test` does run on macOS (tagged `:macos_only`, excluded in CI) syntax-checks `mob_camera_nif.m` against the iPhoneOS SDK at the iOS 17 deployment target and fails on any warning — a deprecated AVFoundation API shows up there before it shows up in every host's build log.
 
 ## The pre-empt-failure rules that matter here
 
