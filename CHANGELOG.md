@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.10] - 2026-09-30
 
 ### Fixed
 - **iOS deprecation warnings on every device build** (MOB-294). The frame
@@ -18,6 +18,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `videoRotationAngle = 90` (portrait upright, back and front camera), and
   logs when a connection can't rotate instead of claiming it did. Photo and
   video capture (`UIImagePickerController`) are unaffected.
+
+### Changed
+- **Signed with full file coverage** (MOB-297). Signed in CI by mob_dev
+  0.7.3, whose signature now covers every packaged file, including the
+  Objective-C NIF source that 0.1.9's signature left out. Hosts on mob_dev
+  0.7.2 still verify it; 0.7.3+ also enforces the coverage.
+- A macOS-only test compiles the iOS NIF against the iPhoneOS SDK and fails
+  on any compiler warning (skipped when the SDK isn't installed).
 
 ## [0.1.9] - 2026-09-30
 
