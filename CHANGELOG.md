@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **iOS deprecation warnings on every device build** (MOB-294). The frame
+  stream's portrait rotation fell back to `AVCaptureConnection`'s
+  `isVideoOrientationSupported` / `videoOrientation`, deprecated since iOS 17
+  — the deployment target — so the fallback was dead code that still warned
+  and made zig print the objc compile step under a `failed command:` header.
+  The NIF now uses only `isVideoRotationAngleSupported:` /
+  `videoRotationAngle = 90` (portrait upright, back and front camera), and
+  logs when a connection can't rotate instead of claiming it did. Photo and
+  video capture (`UIImagePickerController`) are unaffected.
+
 ## [0.1.9] - 2026-09-30
 
 ### Changed
