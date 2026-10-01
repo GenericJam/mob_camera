@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.11] - 2026-09-30
 
 ### Fixed
 - **`start_frame_stream(width: nil, height: nil)` delivered empty 0×0 frames**
@@ -18,8 +18,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   upright portrait (e.g. 1080×1920 on an iPhone), byte size `w*h*4`
   (`:bgra_u8`) / `w*h*3*4` (`:rgb_f32`), downscaled with its aspect ratio
   kept only past the ~4 MP cap. The Android bridge reads the same null pair
-  as native. Passing `nil` for only one of `:width` / `:height` now raises
-  `ArgumentError`.
+  as native, but that is state handling only: Android still binds no
+  `ImageAnalysis`, so it delivers no frames.
+
+### Changed
+- **Passing `nil` for only one of `:width` / `:height` now raises
+  `ArgumentError`.** Before, it silently produced 0-width or 0-height frames.
 
 ## [0.1.10] - 2026-09-30
 
