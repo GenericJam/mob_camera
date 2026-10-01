@@ -322,6 +322,14 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
 // iOS default and we leave it on); throttle_ms adds an additional
 // software gate when callers want a slower delivery rate than the
 // camera's native 30fps.
+//
+// Native mode (Elixir `width: nil, height: nil`, sent as JSON null) skips
+// the crop + resize: frames are delivered at the capture buffer's own size,
+// which is already portrait because the connection's 90° rotation physically
+// rotates the buffer.
+
+// Per-frame pixel cap (~4 MP = 2048×2048) keeping the BEAM mailbox bounded.
+#define MOB_FRAME_MAX_PIXELS (4 * 1024 * 1024)
 
 @interface MobFrameDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @end
@@ -330,6 +338,7 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
     ErlNifPid _receiver_pid;
     int _target_width;
     int _target_height;
+    BOOL _native;
     NSString *_format;
     int _throttle_ms;
     uint64_t _last_delivered_ms;
@@ -339,12 +348,14 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
 - (instancetype)initWithPid:(ErlNifPid)pid
                       width:(int)width
                      height:(int)height
+                     native:(BOOL)native
                      format:(NSString *)format
                  throttleMs:(int)throttleMs {
     if ((self = [super init])) {
         _receiver_pid = pid;
         _target_width = width;
         _target_height = height;
+        _native = native;
         _format = format;
         _throttle_ms = throttleMs;
         _last_delivered_ms = 0;
@@ -378,19 +389,40 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
     void *src_base = CVPixelBufferGetBaseAddress(pixbuf);
     size_t src_stride = CVPixelBufferGetBytesPerRow(pixbuf);
 
+    // Destination size. Native mode keeps the buffer's own (portrait)
+    // dimensions, only downscaling — aspect kept — past the ~4 MP cap.
+    int dst_w = _target_width;
+    int dst_h = _target_height;
+    if (_native) {
+        dst_w = (int)src_w;
+        dst_h = (int)src_h;
+        double pixels = (double)src_w * (double)src_h;
+        if (pixels > MOB_FRAME_MAX_PIXELS) {
+            double s = sqrt(MOB_FRAME_MAX_PIXELS / pixels);
+            dst_w = MAX(1, (int)((double)src_w * s));
+            dst_h = MAX(1, (int)((double)src_h * s));
+        }
+    }
+    if (dst_w <= 0 || dst_h <= 0 || src_w == 0 || src_h == 0) {
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        _dropped_count++;
+        return;
+    }
+
     // Center-crop the source to the destination aspect ratio so the
     // resize doesn't squash a 16:9 camera frame into a 1:1 tensor.
     // For a 1920×1080 source and a 640×640 destination: take a centered
     // 1080×1080 square (cuts 420 px from each side), then scale to
-    // 640×640.
-    int dst_w = _target_width;
-    int dst_h = _target_height;
-
+    // 640×640. Native mode always keeps the whole source: even when the cap
+    // downscales it, rounding can nudge dst's aspect off the source's, and
+    // cropping a row or column for that would break the uncropped contract.
     double src_aspect = (double)src_w / (double)src_h;
     double dst_aspect = (double)dst_w / (double)dst_h;
 
     size_t crop_x = 0, crop_y = 0, crop_w = src_w, crop_h = src_h;
-    if (src_aspect > dst_aspect) {
+    if (_native) {
+        // Full source; vImage scales it (or it's packed as-is) below.
+    } else if (src_aspect > dst_aspect) {
         // Source is wider than destination — crop horizontally.
         crop_w = (size_t)((double)src_h * dst_aspect);
         crop_x = (src_w - crop_w) / 2;
@@ -409,26 +441,36 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
         .rowBytes = src_stride,
     };
 
-    // Intermediate BGRA8 destination at the target size.
-    uint8_t *dst_bgra = malloc((size_t)dst_w * dst_h * 4);
-    vImage_Buffer vdst = {
-        .data = dst_bgra,
-        .height = (vImagePixelCount)dst_h,
-        .width = (vImagePixelCount)dst_w,
-        .rowBytes = (size_t)dst_w * 4,
-    };
-
-    vImageScale_ARGB8888(&vsrc, &vdst, NULL, kvImageHighQualityResampling);
-
-    CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+    // BGRA8 pixels at the target size to pack from: the camera buffer itself
+    // when no crop/scale is needed (native resolution), else a vImage-scaled
+    // intermediate. Rows may be padded, so packing honours `bgra_stride`.
+    const uint8_t *bgra = vsrc.data;
+    size_t bgra_stride = src_stride;
+    uint8_t *scaled = NULL;
+    if (crop_w != (size_t)dst_w || crop_h != (size_t)dst_h) {
+        scaled = malloc((size_t)dst_w * dst_h * 4);
+        if (!scaled) {
+            CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+            _dropped_count++;
+            return;
+        }
+        vImage_Buffer vdst = {
+            .data = scaled,
+            .height = (vImagePixelCount)dst_h,
+            .width = (vImagePixelCount)dst_w,
+            .rowBytes = (size_t)dst_w * 4,
+        };
+        vImageScale_ARGB8888(&vsrc, &vdst, NULL, kvImageHighQualityResampling);
+        bgra = scaled;
+        bgra_stride = (size_t)dst_w * 4;
+    }
 
     // Pack into the requested output format.
     ErlNifEnv *msg_env = enif_alloc_env();
     ErlNifBinary out_bin;
 
     if ([_format isEqualToString:@"rgb_f32"]) {
-        size_t pixel_count = (size_t)dst_w * (size_t)dst_h;
-        enif_alloc_binary(pixel_count * 3 * sizeof(float), &out_bin);
+        enif_alloc_binary((size_t)dst_w * dst_h * 3 * sizeof(float), &out_bin);
         float *out = (float *)out_bin.data;
 
         // vImage delivers BGRA8 in iOS-native channel order. Convert to
@@ -436,20 +478,25 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
         // doesn't ship a BGRA→RGB-interleaved-f32 single-call so this
         // would otherwise be three passes (BGRA→RGBA→planar→combine).
         // The single-pass loop is ~1ms on a 640×640 frame.
-        for (size_t i = 0; i < pixel_count; i++) {
-            uint8_t b = dst_bgra[i * 4 + 0];
-            uint8_t g = dst_bgra[i * 4 + 1];
-            uint8_t r = dst_bgra[i * 4 + 2];
-            out[i * 3 + 0] = (float)r / 255.0f;
-            out[i * 3 + 1] = (float)g / 255.0f;
-            out[i * 3 + 2] = (float)b / 255.0f;
+        for (int y = 0; y < dst_h; y++) {
+            const uint8_t *row = bgra + (size_t)y * bgra_stride;
+            float *out_row = out + (size_t)y * dst_w * 3;
+            for (int x = 0; x < dst_w; x++) {
+                out_row[x * 3 + 0] = (float)row[x * 4 + 2] / 255.0f;
+                out_row[x * 3 + 1] = (float)row[x * 4 + 1] / 255.0f;
+                out_row[x * 3 + 2] = (float)row[x * 4 + 0] / 255.0f;
+            }
         }
     } else {
-        // :bgra_u8 — copy bytes directly.
-        enif_alloc_binary((size_t)dst_w * dst_h * 4, &out_bin);
-        memcpy(out_bin.data, dst_bgra, (size_t)dst_w * dst_h * 4);
+        // :bgra_u8 — copy bytes directly, row by row to drop any padding.
+        size_t row_bytes = (size_t)dst_w * 4;
+        enif_alloc_binary(row_bytes * dst_h, &out_bin);
+        for (int y = 0; y < dst_h; y++) {
+            memcpy(out_bin.data + (size_t)y * row_bytes, bgra + (size_t)y * bgra_stride, row_bytes);
+        }
     }
-    free(dst_bgra);
+    free(scaled);
+    CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
 
     // Build the result map. Keys are atoms so the Elixir side gets
     // %{bytes:, width:, height:, format:, timestamp_ms:, dropped:}.
@@ -490,6 +537,12 @@ static ERL_NIF_TERM nif_camera_stop_preview(ErlNifEnv *env, int argc, const ERL_
 // the comment there.)
 static dispatch_queue_t g_frame_delivery_queue = NULL;
 
+// Integer option, or `dflt` when absent or not a JSON number (e.g. null).
+static int mob_opt_int(NSDictionary *opts, NSString *key, int dflt) {
+    id v = opts[key];
+    return [v isKindOfClass:[NSNumber class]] ? [v intValue] : dflt;
+}
+
 static ERL_NIF_TERM nif_camera_start_frame_stream(ErlNifEnv *env, int argc,
                                                   const ERL_NIF_TERM argv[]) {
     ErlNifBinary bin;
@@ -506,14 +559,20 @@ static ERL_NIF_TERM nif_camera_start_frame_stream(ErlNifEnv *env, int argc,
                                         options:0
                                           error:nil];
 
-    int target_w = [(opts[@"width"] ?: @640) intValue];
-    int target_h = [(opts[@"height"] ?: @640) intValue];
+    // width/height both JSON null (Elixir `width: nil, height: nil`) = native
+    // resolution; the Elixir side rejects a lone nil before it gets here.
+    BOOL native = [opts[@"width"] isKindOfClass:[NSNull class]] &&
+                  [opts[@"height"] isKindOfClass:[NSNull class]];
+    int target_w = native ? 0 : mob_opt_int(opts, @"width", 640);
+    int target_h = native ? 0 : mob_opt_int(opts, @"height", 640);
     NSString *facing = [opts[@"facing"] isEqualToString:@"front"] ? @"front" : @"back";
     NSString *format = [opts[@"format"] isEqualToString:@"bgra_u8"] ? @"bgra_u8" : @"rgb_f32";
-    int throttle_ms = [(opts[@"throttle_ms"] ?: @0) intValue];
+    int throttle_ms = mob_opt_int(opts, @"throttle_ms", 0);
 
-    // Cap pixel count to keep mailbox bounded. ~4 MP = 2048×2048.
-    if ((int64_t)target_w * (int64_t)target_h > 4 * 1024 * 1024) {
+    // Cap pixel count to keep mailbox bounded. Native frames are capped
+    // per-frame in the delegate (aspect kept), since their size is only
+    // known once the buffers arrive.
+    if ((int64_t)target_w * (int64_t)target_h > MOB_FRAME_MAX_PIXELS) {
         target_w = 2048;
         target_h = 2048;
     }
@@ -521,8 +580,8 @@ static ERL_NIF_TERM nif_camera_start_frame_stream(ErlNifEnv *env, int argc,
     ErlNifPid caller_pid;
     enif_self(env, &caller_pid);
 
-    NSLog(@"[mob/camera] start_frame_stream w=%d h=%d facing=%@ format=%@ throttle=%d", target_w,
-          target_h, facing, format, throttle_ms);
+    NSLog(@"[mob/camera] start_frame_stream w=%d h=%d native=%d facing=%@ format=%@ throttle=%d",
+          target_w, target_h, native, facing, format, throttle_ms);
 
     if (!g_frame_delivery_queue) {
         g_frame_delivery_queue =
@@ -549,6 +608,7 @@ static ERL_NIF_TERM nif_camera_start_frame_stream(ErlNifEnv *env, int argc,
       MobFrameDelegate *delegate = [[MobFrameDelegate alloc] initWithPid:caller_pid
                                                                    width:target_w
                                                                   height:target_h
+                                                                  native:native
                                                                   format:format
                                                               throttleMs:throttle_ms];
       // Per Apple: setSampleBufferDelegate:queue: does NOT retain the

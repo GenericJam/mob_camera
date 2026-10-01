@@ -261,6 +261,32 @@ defmodule MobCameraTest do
       assert decoded["format"] == "rgb_f32"
       assert decoded["width"] == 640
     end
+
+    # MOB-308: `:json` encodes the Elixir atom `nil` as the STRING "nil", which
+    # the iOS NIF read as 0 → every frame arrived 0×0 with empty bytes. Native
+    # resolution must reach the NIF as a real JSON null.
+    test "width: nil, height: nil (native resolution) reaches the NIF as JSON null" do
+      json =
+        MobCamera.frame_stream_opts(width: nil, height: nil)
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      refute json =~ ~s("nil")
+      assert %{"width" => :null, "height" => :null} = :json.decode(json)
+    end
+
+    test "nil for only one of :width / :height raises instead of guessing" do
+      for opts <- [
+            [width: nil],
+            [height: nil],
+            [width: nil, height: 480],
+            [width: 320, height: nil]
+          ] do
+        assert_raise ArgumentError, ~r/both :width and :height/, fn ->
+          MobCamera.frame_stream_opts(opts)
+        end
+      end
+    end
   end
 
   describe "public API surface (extraction parity with old Mob.Camera)" do

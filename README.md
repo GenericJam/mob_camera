@@ -99,7 +99,9 @@ hand-rolled hosts must add it or capture returns `:cancelled`.
   Moving the view here, and wiring the Android CameraX binding above, both
   wait on the plugin native-view capability.
 - Frame size is capped at ~4 MP; mismatched aspect ratios are center-cropped
-  on the long axis before scaling. (iOS only — see above.)
+  on the long axis before scaling. `width: nil, height: nil` (both) delivers
+  the camera's native resolution uncropped and unscaled (upright portrait).
+  (iOS only — see above.)
 
 ## Development
 

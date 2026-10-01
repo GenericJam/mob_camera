@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`start_frame_stream(width: nil, height: nil)` delivered empty 0×0 frames**
+  (MOB-308). The documented native-resolution option was serialised with
+  OTP `:json`, which encodes Elixir `nil` as the string `"nil"`; the iOS NIF
+  read that as a 0×0 target and every frame arrived with `width: 0`,
+  `height: 0` and empty bytes. Native resolution is now sent as JSON `null`,
+  and the iOS NIF delivers the capture buffer as-is — no crop, no scale,
+  upright portrait (e.g. 1080×1920 on an iPhone), byte size `w*h*4`
+  (`:bgra_u8`) / `w*h*3*4` (`:rgb_f32`), downscaled with its aspect ratio
+  kept only past the ~4 MP cap. The Android bridge reads the same null pair
+  as native. Passing `nil` for only one of `:width` / `:height` now raises
+  `ArgumentError`.
+
 ## [0.1.10] - 2026-09-30
 
 ### Fixed
