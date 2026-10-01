@@ -126,9 +126,15 @@ defmodule MobCamera do
   ## Options
 
     * `:width`, `:height` — target frame size in pixels. Defaults to `640` × `640`
-      (YOLO-friendly). Pass `nil` for both to receive the camera's native
-      resolution. Mismatched aspect ratios are center-cropped on the long axis
-      before scaling. Capped at ~4 MP to keep the BEAM mailbox bounded.
+      (YOLO-friendly). Mismatched aspect ratios are center-cropped on the long
+      axis before scaling. Capped at ~4 MP to keep the BEAM mailbox bounded (a
+      larger request is delivered as `2048` × `2048`).
+
+      Pass `nil` for **both** to receive the camera's native resolution instead:
+      no crop, no scale, upright portrait — the delivered `width`/`height` are the
+      capture buffer's own (e.g. `1080` × `1920` on an iPhone). A native frame
+      above the ~4 MP cap is downscaled with its aspect ratio kept. Passing `nil`
+      for only one of the two raises `ArgumentError`.
 
     * `:format` — pixel format. One of:
       - `:rgb_f32` (default) — interleaved RGB floats normalised to `[0.0, 1.0]`.
@@ -156,14 +162,28 @@ defmodule MobCamera do
   """
   @spec frame_stream_opts(keyword()) :: map()
   def frame_stream_opts(opts) do
+    {width, height} = frame_size(Keyword.get(opts, :width, 640), Keyword.get(opts, :height, 640))
+
     %{
-      "width" => Keyword.get(opts, :width, 640),
-      "height" => Keyword.get(opts, :height, 640),
+      "width" => width,
+      "height" => height,
       "format" => Keyword.get(opts, :format, :rgb_f32) |> Atom.to_string(),
       "facing" => Keyword.get(opts, :facing, :back) |> Atom.to_string(),
       "throttle_ms" => Keyword.get(opts, :throttle_ms, 0)
     }
   end
+
+  # Native resolution is sent as JSON null — `:json` encodes `:null` as `null`
+  # but the Elixir atom `nil` as the string "nil".
+  defp frame_size(nil, nil), do: {:null, :null}
+
+  defp frame_size(width, height) when is_nil(width) or is_nil(height) do
+    raise ArgumentError,
+          "start_frame_stream: pass both :width and :height as nil for native " <>
+            "resolution, or neither (got width: #{inspect(width)}, height: #{inspect(height)})"
+  end
+
+  defp frame_size(width, height), do: {width, height}
 
   @doc """
   Stop the camera frame stream. Safe to call when no stream is active. The

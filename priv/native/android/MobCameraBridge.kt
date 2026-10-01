@@ -216,6 +216,10 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
     internal var frameStreamPid: Long = 0L
     internal var frameStreamWidth = 640
     internal var frameStreamHeight = 640
+
+    // width/height both JSON null (Elixir `width: nil, height: nil`): deliver
+    // the analysis frame at its own (rotated) size, no crop/scale.
+    internal var frameStreamNative = false
     internal var frameStreamFormat = "rgb_f32"
     internal var frameStreamThrottleMs = 0
     private var lastDeliveryMs = 0L
@@ -251,6 +255,7 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
         try {
             val o = JSONObject(optsJson)
             frameStreamPid = pid
+            frameStreamNative = o.has("width") && o.isNull("width") && o.has("height") && o.isNull("height")
             frameStreamWidth = o.optInt("width", 640).coerceIn(1, 4096)
             frameStreamHeight = o.optInt("height", 640).coerceIn(1, 4096)
             frameStreamFormat = o.optString("format", "rgb_f32")
@@ -285,7 +290,7 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
                 return
             }
             val rotated = rotateIfNeeded(image.toBitmap(), image.imageInfo.rotationDegrees)
-            val cropped = centerCropAndScale(rotated, frameStreamWidth, frameStreamHeight)
+            val cropped = if (frameStreamNative) capPixels(rotated) else centerCropAndScale(rotated, frameStreamWidth, frameStreamHeight)
             val bytes = if (frameStreamFormat == "bgra_u8") bitmapToBgraU8(cropped) else bitmapToRgbF32(cropped)
             nativeDeliverCameraFrame(frameStreamPid, bytes, cropped.width, cropped.height, frameStreamFormat, now, droppedCount)
             lastDeliveryMs = now
@@ -304,6 +309,16 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
         if (deg == 0) return bm
         val m = Matrix().apply { postRotate(deg.toFloat()) }
         return Bitmap.createBitmap(bm, 0, 0, bm.width, bm.height, m, true)
+    }
+
+    // Native frames keep their aspect ratio; only past ~4 MP (the iOS cap) are
+    // they downscaled, to keep the BEAM mailbox bounded.
+    private fun capPixels(bm: Bitmap): Bitmap {
+        val pixels = bm.width.toDouble() * bm.height
+        val max = 4.0 * 1024 * 1024
+        if (pixels <= max) return bm
+        val s = Math.sqrt(max / pixels)
+        return Bitmap.createScaledBitmap(bm, maxOf(1, (bm.width * s).toInt()), maxOf(1, (bm.height * s).toInt()), true)
     }
 
     private fun centerCropAndScale(
