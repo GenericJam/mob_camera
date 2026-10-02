@@ -61,7 +61,7 @@ defmodule MobCameraTest do
     # main thread — off-thread they throw IllegalStateException / wedge the UI toolkit,
     # and the host app appears to hang on "Take Photo" (seen in GenericJam/sloppy_joe).
     # launchCapture must hop to the UI thread for BOTH the registration and the launch.
-    # Source-level because JNI threading isn't exercisable from mix test (see CLAUDE.md).
+    # Source-level because JNI threading isn't exercisable from mix test (see AGENTS.md).
     setup do
       {:ok, m} = Manifest.load(@plugin_dir)
       %{src: File.read!(Path.join(@plugin_dir, m.android.bridge_kt))}
@@ -89,7 +89,7 @@ defmodule MobCameraTest do
     # the next ensure_session's fast path (`g_camera_input && facing matches`)
     # returned YES without ever adding an input to the NEW session — a silent
     # black preview. Source-level because AVCaptureSession state isn't
-    # exercisable from `mix test` (see CLAUDE.md).
+    # exercisable from `mix test` (see AGENTS.md).
     setup do
       %{src: File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_camera_nif.m"))}
     end
@@ -342,7 +342,7 @@ defmodule MobCameraTest do
     # jstring landed in the timestamp slot and was deref'd as a C string →
     # guaranteed SIGSEGV on the first delivered frame. Source-level because the
     # JNI boundary isn't exercisable from `mix test` (see the sibling regressions
-    # above and CLAUDE.md).
+    # above and AGENTS.md).
     setup do
       {:ok, m} = Manifest.load(@plugin_dir)
 
