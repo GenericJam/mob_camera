@@ -1,4 +1,4 @@
-# AGENTS.md — orientation for AI agents working on mob_camera
+# mob_camera — Agent Instructions
 
 You're in **mob_camera**, a Mob plugin for on-device camera capture, live preview, and per-frame streaming. It's a Wave-2 extraction from mob core: one public Elixir surface (`MobCamera`), one NIF module (`:mob_camera_nif`) with per-platform implementations, and a Kotlin bridge on Android. Callers do `MobCamera.capture_photo/2`, `MobCamera.capture_video/2`, `MobCamera.start_preview/2`, or `MobCamera.start_frame_stream/2`; results come back as `handle_info({:camera, kind, %{…}}, socket)` messages.
 
@@ -76,6 +76,8 @@ mix format
 mix credo --strict     # includes ExSlop + jump_credo_checks
 ```
 
-The pre-push hook (activated once via `mix setup`, which does `git config core.hooksPath .githooks`) runs format / credo / compile on every push and the full suite when `mix.exs` changes.
+Native changes (`.m` / `.zig` / `.kt`) aren't exercised by `mix test` — they need a `mix mob.deploy --native` of a host app (e.g. `mob_plugin_demo`) and a physical-device check before committing (see Testing).
+
+The pre-push hook (`.githooks/pre-push`, activated once via `mix setup`, which does `git config core.hooksPath .githooks`) runs format / credo / compile on every push and the full suite when `mix.exs` changes (release preflight).
 
 Releases: bumping `@version` in `mix.exs` on master triggers `.github/workflows/release.yml` (tag + GitHub Release + Hex publish, each step idempotent). See [`~/code/mob/RELEASE.md`](../mob/RELEASE.md) for the trigger model. Do not bump versions without explicit permission.
