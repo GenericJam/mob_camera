@@ -20,12 +20,24 @@ defmodule MobCamera do
 
   iOS: `UIImagePickerController`. Android: `TakePicture` / `CaptureVideo` activity contracts.
 
+  ## Headless still (`snap/1`)
+
+  `snap/1` takes a photo with no preview and no user action — for code (an
+  agent, a timer, a sensor trigger) that wants to see what the camera sees.
+  It returns `:ok` and messages the calling process:
+
+      handle_info({:camera, :snapped, %{path: path, width: w, height: h, facing: :back}}, socket)
+      handle_info({:camera, :snap_error, reason}, socket)
+
+  iOS: `AVCaptureSession` + `AVCapturePhotoOutput`. Android: CameraX
+  `ImageCapture` on its own lifecycle. See `snap/1` for options and reasons.
+
   ## Platform support
 
-  Capture (`capture_photo/2`, `capture_video/2`) is fully implemented on both
-  platforms. Live preview (`start_preview/2`) and frame streaming
-  (`start_frame_stream/2`) are **iOS-only** for now — see the `@doc` on each
-  and the README's Limits section for why.
+  Capture (`capture_photo/2`, `capture_video/2`) and `snap/1` are fully
+  implemented on both platforms. Live preview (`start_preview/2`) and frame
+  streaming (`start_frame_stream/2`) are **iOS-only** for now — see the `@doc`
+  on each and the README's Limits section for why.
 
   ## Live frame stream
 
@@ -194,4 +206,112 @@ defmodule MobCamera do
     :mob_camera_nif.camera_stop_frame_stream()
     socket
   end
+
+  @snap_defaults %{facing: :back, flash: :off, max_size: 1600, quality: 85}
+
+  @typedoc "Why a `snap/1` failed, as delivered in `{:camera, :snap_error, reason}`."
+  @type snap_error :: :no_camera | :permission | :busy | :background | String.t()
+
+  @doc """
+  Take one still photo headlessly: no preview, no shutter, no user action.
+
+  Opens the camera, lets auto-exposure, autofocus and white balance settle (so
+  the frame isn't black or dark), takes one still, releases the camera and
+  writes an upright JPEG to the app's cache (Android) or temp (iOS) directory.
+  Works from any process — a screen, a GenServer, a Task — and the result goes
+  to **the calling process**:
+
+      {:camera, :snapped, %{path: path, width: w, height: h, facing: :back | :front}}
+      {:camera, :snap_error, reason}
+
+  `reason` is one of:
+
+    * `:no_camera` — no camera with that facing (always on the iOS simulator).
+    * `:permission` — camera permission not granted. `snap/1` never prompts;
+      request `:camera` first with `Mob.Permissions.request/2`.
+    * `:busy` — another snap is in progress, the camera is held elsewhere
+      (Android, after the camera stayed in use until the timeout), or, on iOS,
+      a `start_preview/2` / `start_frame_stream/2` session or a
+      `capture_photo/2` / `capture_video/2` picker is open.
+    * `:background` — the app has no foreground activity/scene; neither OS
+      gives the camera to a backgrounded app.
+    * a `String.t()` describing a platform error (including the native
+      10-second timeout).
+
+  Exactly one of the two messages arrives for every `:ok`.
+
+  The pixels are rotated upright (the sensor/EXIF orientation is applied to
+  them and the file is written with orientation 1), so whatever reads the file
+  sees it the right way up without honouring EXIF. `width`/`height` are the
+  written image's. `path` is a temp file: move it if you want to keep it.
+
+  On Android, a running `Mob.UI.camera_preview/1` pauses while the snap holds
+  the camera and resumes after.
+
+  ## Options
+
+    * `:facing` — `:back` (default) or `:front`.
+    * `:flash` — `:off` (default), `:on` or `:auto`. Ignored by a camera with no
+      flash.
+    * `:max_size` — longest side of the written image in pixels (default
+      `1600`); a smaller sensor image is not upscaled. `nil` keeps the sensor's
+      full resolution.
+    * `:quality` — JPEG quality, `1..100` (default `85`).
+
+  Returns `:ok` once the request is handed to the native side, or
+  `{:error, {:invalid_option, key, value}}` / `{:error, {:unknown_option, key}}`
+  for bad options (nothing is sent then). `{:error, :unavailable}` means the
+  native bridge never registered (Android).
+
+  Requires the `:camera` permission.
+  """
+  @spec snap(keyword()) :: :ok | {:error, term()}
+  def snap(opts \\ []) do
+    with {:ok, native_opts} <- snap_opts(opts) do
+      :mob_camera_nif.camera_snap(:json.encode(native_opts))
+    end
+  end
+
+  @doc """
+  Validate `snap/1` options and build the map sent to the NIF. Pure function
+  exposed so tests can pin defaults and serialisation without the NIF.
+
+      iex> MobCamera.snap_opts(facing: :front)
+      {:ok, %{"facing" => "front", "flash" => "off", "max_size" => 1600, "quality" => 85}}
+  """
+  @spec snap_opts(keyword()) ::
+          {:ok, map()} | {:error, {:invalid_option, atom(), term()} | {:unknown_option, term()}}
+  def snap_opts(opts) when is_list(opts) do
+    Enum.reduce_while(opts, {:ok, @snap_defaults}, fn
+      {key, value}, {:ok, acc} when is_map_key(@snap_defaults, key) ->
+        if valid_snap_opt?(key, value),
+          do: {:cont, {:ok, Map.put(acc, key, value)}},
+          else: {:halt, {:error, {:invalid_option, key, value}}}
+
+      {key, _value}, _acc ->
+        {:halt, {:error, {:unknown_option, key}}}
+
+      other, _acc ->
+        {:halt, {:error, {:unknown_option, other}}}
+    end)
+    |> case do
+      {:ok, o} ->
+        {:ok,
+         %{
+           "facing" => Atom.to_string(o.facing),
+           "flash" => Atom.to_string(o.flash),
+           # `:json` encodes `:null` as null; Elixir nil would become "nil".
+           "max_size" => o.max_size || :null,
+           "quality" => o.quality
+         }}
+
+      error ->
+        error
+    end
+  end
+
+  defp valid_snap_opt?(:facing, v), do: v in [:back, :front]
+  defp valid_snap_opt?(:flash, v), do: v in [:off, :on, :auto]
+  defp valid_snap_opt?(:max_size, v), do: is_nil(v) or (is_integer(v) and v > 0)
+  defp valid_snap_opt?(:quality, v), do: is_integer(v) and v in 1..100
 end

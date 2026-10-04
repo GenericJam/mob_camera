@@ -15,6 +15,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Accelerate/Accelerate.h>
 #import <Foundation/Foundation.h>
+#import <ImageIO/ImageIO.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <erl_nif.h>
@@ -667,6 +668,413 @@ static ERL_NIF_TERM nif_camera_stop_frame_stream(ErlNifEnv *env, int argc,
     return enif_make_atom(env, "ok");
 }
 
+// ── Headless still capture (snap) ─────────────────────────────────────────
+// One still with no preview and no user action:
+//   {camera, snapped, #{path, width, height, facing}} | {camera, snap_error, Reason}
+// A private AVCaptureSession + AVCapturePhotoOutput (no preview layer) is
+// built per snap on mob_camera_queue(), run until exposure/focus/white balance
+// stop adjusting (bounded), shot, and stopped before the JPEG is written. The
+// shared preview/frame-stream session is never touched: while it runs, a snap
+// reports busy instead of competing for the camera. Exactly one message per
+// snap: `_done` (camera queue only) is claimed by the shot, an error or the
+// timeout.
+
+#define MOB_SNAP_TIMEOUT_SEC 10.0
+#define MOB_SNAP_SETTLE_MIN_SEC 0.3
+#define MOB_SNAP_SETTLE_MAX_SEC 2.5
+#define MOB_SNAP_POLL_SEC 0.05
+// Consecutive polls with nothing adjusting before shooting.
+#define MOB_SNAP_STILL_POLLS 3
+
+// reason: an atom when `atom` is non-NULL, else a binary carrying `text`.
+static void snap_send_error(ErlNifPid pid, const char *atom, NSString *text) {
+    ErlNifEnv *e = enif_alloc_env();
+    ERL_NIF_TERM reason;
+    if (atom) {
+        reason = enif_make_atom(e, atom);
+    } else {
+        const char *s = text.UTF8String ?: "unknown camera error";
+        size_t n = strlen(s);
+        unsigned char *buf = enif_make_new_binary(e, n, &reason);
+        memcpy(buf, s, n);
+    }
+    ERL_NIF_TERM msg =
+        enif_make_tuple3(e, enif_make_atom(e, "camera"), enif_make_atom(e, "snap_error"), reason);
+    enif_send(NULL, &pid, e, msg);
+    enif_free_env(e);
+}
+
+static void snap_send_ok(ErlNifPid pid, NSString *path, size_t w, size_t h, NSString *facing) {
+    ErlNifEnv *e = enif_alloc_env();
+    const char *p = path.UTF8String;
+    size_t n = strlen(p);
+    ERL_NIF_TERM path_term;
+    memcpy(enif_make_new_binary(e, n, &path_term), p, n);
+    ERL_NIF_TERM keys[4] = {enif_make_atom(e, "path"), enif_make_atom(e, "width"),
+                            enif_make_atom(e, "height"), enif_make_atom(e, "facing")};
+    ERL_NIF_TERM vals[4] = {path_term, enif_make_uint64(e, w), enif_make_uint64(e, h),
+                            enif_make_atom(e, facing.UTF8String)};
+    ERL_NIF_TERM map;
+    enif_make_map_from_arrays(e, keys, vals, 4, &map);
+    ERL_NIF_TERM msg =
+        enif_make_tuple3(e, enif_make_atom(e, "camera"), enif_make_atom(e, "snapped"), map);
+    enif_send(NULL, &pid, e, msg);
+    enif_free_env(e);
+}
+
+// Decode with the EXIF orientation applied to the pixels, cap the longest side
+// at max_size (0 = keep the full size), and write a JPEG tagged orientation 1.
+// Returns the written path, or nil with *err set.
+static NSString *snap_write_upright_jpeg(NSData *data, int max_size, int quality, size_t *w,
+                                         size_t *h, NSString **err) {
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!src) {
+        *err = @"could not read the captured photo";
+        return nil;
+    }
+    NSDictionary *props =
+        (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(src, 0, NULL);
+    int longest = MAX([props[(id)kCGImagePropertyPixelWidth] intValue],
+                      [props[(id)kCGImagePropertyPixelHeight] intValue]);
+    int target = (max_size > 0 && max_size < longest) ? max_size : longest;
+    NSDictionary *thumb_opts = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways : @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform : @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize : @(target),
+        (id)kCGImageSourceShouldCacheImmediately : @YES,
+    };
+    CGImageRef img = CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)thumb_opts);
+    CFRelease(src);
+    if (!img) {
+        *err = @"could not decode the captured photo";
+        return nil;
+    }
+
+    NSString *path = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"mob_snap_%@.jpg",
+                                                                  [NSUUID UUID].UUIDString]];
+    CGImageDestinationRef dst = CGImageDestinationCreateWithURL(
+        (__bridge CFURLRef)[NSURL fileURLWithPath:path], (__bridge CFStringRef)UTTypeJPEG.identifier,
+        1, NULL);
+    BOOL ok = NO;
+    if (dst) {
+        NSDictionary *dst_opts = @{
+            (id)kCGImageDestinationLossyCompressionQuality : @(quality / 100.0),
+            (id)kCGImagePropertyOrientation : @1,
+        };
+        CGImageDestinationAddImage(dst, img, (__bridge CFDictionaryRef)dst_opts);
+        ok = CGImageDestinationFinalize(dst);
+        CFRelease(dst);
+    }
+    *w = CGImageGetWidth(img);
+    *h = CGImageGetHeight(img);
+    CGImageRelease(img);
+    if (!ok) {
+        *err = @"could not write the photo";
+        return nil;
+    }
+    return path;
+}
+
+@interface MobSnapSession : NSObject <AVCapturePhotoCaptureDelegate>
+- (instancetype)initWithPid:(ErlNifPid)pid
+                     facing:(NSString *)facing
+                      flash:(AVCaptureFlashMode)flash
+                    maxSize:(int)maxSize
+                    quality:(int)quality;
+- (void)start;
+@end
+
+// The snap in flight (mob_camera_queue() only) — also the strong reference
+// that keeps the session and its photo delegate alive.
+static MobSnapSession *g_snap = nil;
+
+@implementation MobSnapSession {
+    ErlNifPid _pid;
+    NSString *_facing;
+    AVCaptureFlashMode _flash;
+    int _maxSize;
+    int _quality;
+    AVCaptureDevice *_device;
+    AVCaptureSession *_session;
+    AVCapturePhotoOutput *_output;
+    AVCaptureDeviceRotationCoordinator *_rotation;
+    NSMutableArray *_observers;
+    CFAbsoluteTime _runningSince;
+    int _stillPolls;
+    BOOL _shot;
+    BOOL _done;
+}
+
+- (instancetype)initWithPid:(ErlNifPid)pid
+                     facing:(NSString *)facing
+                      flash:(AVCaptureFlashMode)flash
+                    maxSize:(int)maxSize
+                    quality:(int)quality {
+    if ((self = [super init])) {
+        _pid = pid;
+        _facing = facing;
+        _flash = flash;
+        _maxSize = maxSize;
+        _quality = quality;
+        _observers = [NSMutableArray array];
+    }
+    return self;
+}
+
+// mob_camera_queue(). Ends the snap: stops the camera, then messages the caller.
+- (void)failWithAtom:(const char *)atom text:(NSString *)text {
+    if (_done)
+        return;
+    _done = YES;
+    [self teardown];
+    NSLog(@"[mob/camera] snap failed: %s", atom ?: text.UTF8String);
+    snap_send_error(_pid, atom, text);
+}
+
+// mob_camera_queue(). Idempotent.
+- (void)teardown {
+    for (id token in _observers)
+        [[NSNotificationCenter defaultCenter] removeObserver:token];
+    [_observers removeAllObjects];
+    if (_session.isRunning)
+        [_session stopRunning];
+    _session = nil;
+    _output = nil;
+    _rotation = nil;
+    _device = nil;
+    if (g_snap == self)
+        g_snap = nil;
+}
+
+- (void)start {
+    __weak MobSnapSession *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MOB_SNAP_TIMEOUT_SEC * NSEC_PER_SEC)),
+                   mob_camera_queue(), ^{
+                     [weakSelf failWithAtom:NULL
+                                       text:@"timed out after 10 s waiting for the camera"];
+                   });
+
+    AVCaptureDevicePosition position =
+        [_facing isEqualToString:@"front"] ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
+    _device = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
+                                                 mediaType:AVMediaTypeVideo
+                                                  position:position];
+    if (!_device) {
+        [self failWithAtom:"no_camera" text:nil];
+        return;
+    }
+    if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo] !=
+        AVAuthorizationStatusAuthorized) {
+        [self failWithAtom:"permission" text:nil];
+        return;
+    }
+
+    NSError *err = nil;
+    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:_device error:&err];
+    if (!input) {
+        [self failWithAtom:NULL
+                      text:[NSString stringWithFormat:@"camera input failed: %@",
+                                                      err.localizedDescription]];
+        return;
+    }
+    _session = [[AVCaptureSession alloc] init];
+    _output = [[AVCapturePhotoOutput alloc] init];
+    [_session beginConfiguration];
+    _session.sessionPreset = AVCaptureSessionPresetPhoto;
+    BOOL wired = [_session canAddInput:input] && [_session canAddOutput:_output];
+    if (wired) {
+        [_session addInput:input];
+        [_session addOutput:_output];
+        // Full sensor resolution when max_size is nil; otherwise the output's
+        // default size, scaled down on write.
+        NSArray<NSValue *> *dims = _device.activeFormat.supportedMaxPhotoDimensions;
+        if (_maxSize == 0 && dims.count > 0)
+            _output.maxPhotoDimensions = dims.lastObject.CMVideoDimensionsValue;
+    }
+    [_session commitConfiguration];
+    if (!wired) {
+        [self failWithAtom:NULL text:@"could not configure the capture session"];
+        return;
+    }
+
+    // Gravity-based upright angle; nil preview layer = no preview.
+    _rotation = [[AVCaptureDeviceRotationCoordinator alloc] initWithDevice:_device previewLayer:nil];
+    [self observe:AVCaptureSessionWasInterruptedNotification
+            using:^(NSNotification *n) {
+              NSInteger why = [n.userInfo[AVCaptureSessionInterruptionReasonKey] integerValue];
+              if (why == AVCaptureSessionInterruptionReasonVideoDeviceNotAvailableInBackground)
+                  [weakSelf failWithAtom:"background" text:nil];
+              else if (why == AVCaptureSessionInterruptionReasonVideoDeviceInUseByAnotherClient ||
+                       why ==
+                           AVCaptureSessionInterruptionReasonVideoDeviceNotAvailableWithMultipleForegroundApps)
+                  [weakSelf failWithAtom:"busy" text:nil];
+              else
+                  [weakSelf
+                      failWithAtom:NULL
+                              text:[NSString stringWithFormat:@"capture session interrupted (%ld)",
+                                                              (long)why]];
+            }];
+    [self observe:AVCaptureSessionRuntimeErrorNotification
+            using:^(NSNotification *n) {
+              NSError *e = n.userInfo[AVCaptureSessionErrorKey];
+              [weakSelf failWithAtom:NULL
+                                text:[NSString stringWithFormat:@"capture session error: %@",
+                                                                e.localizedDescription]];
+            }];
+
+    [_session startRunning];
+    if (_done)
+        return;
+    _runningSince = CFAbsoluteTimeGetCurrent();
+    [self pollSettle];
+}
+
+- (void)observe:(NSNotificationName)name using:(void (^)(NSNotification *))handler {
+    id token = [[NSNotificationCenter defaultCenter]
+        addObserverForName:name
+                    object:_session
+                     queue:nil
+                usingBlock:^(NSNotification *n) {
+                  dispatch_async(mob_camera_queue(), ^{
+                    handler(n);
+                  });
+                }];
+    [_observers addObject:token];
+}
+
+// mob_camera_queue(). Shoot once exposure, focus and white balance have
+// stopped adjusting for a few polls, or at the settle cap regardless.
+- (void)pollSettle {
+    if (_done || _shot)
+        return;
+    CFAbsoluteTime elapsed = CFAbsoluteTimeGetCurrent() - _runningSince;
+    BOOL adjusting = _device.isAdjustingExposure || _device.isAdjustingFocus ||
+                     _device.isAdjustingWhiteBalance;
+    _stillPolls = adjusting ? 0 : _stillPolls + 1;
+    if (elapsed >= MOB_SNAP_SETTLE_MAX_SEC ||
+        (elapsed >= MOB_SNAP_SETTLE_MIN_SEC && _stillPolls >= MOB_SNAP_STILL_POLLS)) {
+        [self shootAfter:elapsed];
+        return;
+    }
+    __weak MobSnapSession *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MOB_SNAP_POLL_SEC * NSEC_PER_SEC)),
+                   mob_camera_queue(), ^{
+                     [weakSelf pollSettle];
+                   });
+}
+
+- (void)shootAfter:(CFAbsoluteTime)elapsed {
+    _shot = YES;
+    AVCapturePhotoSettings *settings =
+        [_output.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG]
+            ? [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey : AVVideoCodecTypeJPEG}]
+            : [AVCapturePhotoSettings photoSettings];
+    if ([_output.supportedFlashModes containsObject:@(_flash)])
+        settings.flashMode = _flash;
+    if (_maxSize == 0)
+        settings.maxPhotoDimensions = _output.maxPhotoDimensions;
+    AVCaptureConnection *conn = [_output connectionWithMediaType:AVMediaTypeVideo];
+    CGFloat angle = _rotation.videoRotationAngleForHorizonLevelCapture;
+    if (conn && [conn isVideoRotationAngleSupported:angle])
+        conn.videoRotationAngle = angle;
+    // Same scene as the back camera / Android: not mirrored.
+    if (conn.isVideoMirroringSupported) {
+        conn.automaticallyAdjustsVideoMirroring = NO;
+        conn.videoMirrored = NO;
+    }
+    NSLog(@"[mob/camera] snap: shooting %@ after %.2fs (angle %.0f)", _facing, elapsed, angle);
+    [_output capturePhotoWithSettings:settings delegate:self];
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output
+    didFinishProcessingPhoto:(AVCapturePhoto *)photo
+                       error:(NSError *)error {
+    NSData *data = error ? nil : [photo fileDataRepresentation];
+    dispatch_async(mob_camera_queue(), ^{
+      if (self->_done)
+          return;
+      if (!data) {
+          [self failWithAtom:NULL
+                        text:[NSString stringWithFormat:@"capture failed: %@",
+                                                        error.localizedDescription ?: @"no data"]];
+          return;
+      }
+      self->_done = YES;
+      [self teardown];
+      ErlNifPid pid = self->_pid;
+      NSString *facing = self->_facing;
+      int max_size = self->_maxSize;
+      int quality = self->_quality;
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        size_t w = 0, h = 0;
+        NSString *err = nil;
+        NSString *path = snap_write_upright_jpeg(data, max_size, quality, &w, &h, &err);
+        if (path) {
+            NSLog(@"[mob/camera] snap: wrote %zux%zu %@", w, h, path);
+            snap_send_ok(pid, path, w, h, facing);
+        } else {
+            snap_send_error(pid, NULL, err);
+        }
+      });
+    });
+}
+@end
+
+// {camera, snapped | snap_error, _} arrives later; this only validates the JSON.
+static ERL_NIF_TERM nif_camera_snap(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    ErlNifBinary bin;
+    if (!enif_inspect_binary(env, argv[0], &bin) &&
+        !enif_inspect_iolist_as_binary(env, argv[0], &bin)) {
+        return enif_make_badarg(env);
+    }
+    NSDictionary *opts = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bin.data
+                                                                               length:bin.size]
+                                                         options:0
+                                                           error:nil];
+    if (![opts isKindOfClass:[NSDictionary class]])
+        return enif_make_badarg(env);
+
+    NSString *facing = [opts[@"facing"] isEqual:@"front"] ? @"front" : @"back";
+    AVCaptureFlashMode flash = [opts[@"flash"] isEqual:@"on"]     ? AVCaptureFlashModeOn
+                               : [opts[@"flash"] isEqual:@"auto"] ? AVCaptureFlashModeAuto
+                                                                  : AVCaptureFlashModeOff;
+    // JSON null = full sensor resolution (0 here).
+    int max_size = [opts[@"max_size"] isKindOfClass:[NSNull class]] ? 0
+                                                                     : MAX(1, mob_opt_int(opts, @"max_size", 1600));
+    int quality = MIN(100, MAX(1, mob_opt_int(opts, @"quality", 85)));
+
+    ErlNifPid pid;
+    enif_self(env, &pid);
+
+    // applicationState and the picker delegate are main-thread state; the
+    // session work then runs on the camera queue that owns g_snap and the
+    // shared preview session.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if ([UIApplication sharedApplication].applicationState == UIApplicationStateBackground) {
+          snap_send_error(pid, "background", nil);
+          return;
+      }
+      if (g_camera_delegate) {
+          snap_send_error(pid, "busy", nil);
+          return;
+      }
+      dispatch_async(mob_camera_queue(), ^{
+        if (g_snap || g_preview_session.isRunning) {
+            snap_send_error(pid, "busy", nil);
+            return;
+        }
+        g_snap = [[MobSnapSession alloc] initWithPid:pid
+                                              facing:facing
+                                               flash:flash
+                                             maxSize:max_size
+                                             quality:quality];
+        [g_snap start];
+      });
+    });
+    return enif_make_atom(env, "ok");
+}
+
 // ── Registration ──────────────────────────────────────────────────────────
 static int load(ErlNifEnv *env, void **priv_data, ERL_NIF_TERM load_info) {
   (void)env;
@@ -683,6 +1091,7 @@ static ErlNifFunc nif_funcs[] = {
     {"camera_stop_preview", 0, nif_camera_stop_preview, 0},
     {"camera_start_frame_stream", 1, nif_camera_start_frame_stream, 0},
     {"camera_stop_frame_stream", 0, nif_camera_stop_frame_stream, 0},
+    {"camera_snap", 1, nif_camera_snap, 0},
 };
 
 ERL_NIF_INIT(mob_camera_nif, nif_funcs, load, NULL, NULL, NULL)
