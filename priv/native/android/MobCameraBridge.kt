@@ -536,15 +536,19 @@ private class SnapSession(
         // Android refuses the camera to an app with no started activity
         // (the camera service reports it as disabled), so say so up front.
         if (!hostStarted()) return fail("background", true)
-        val future = ProcessCameraProvider.getInstance(activity)
-        future.addListener({
-            try {
-                provider = future.get()
-                bind()
-            } catch (e: Exception) {
-                fail("camera provider unavailable: ${e.message}", false)
-            }
-        }, ContextCompat.getMainExecutor(activity))
+        try {
+            val future = ProcessCameraProvider.getInstance(activity)
+            future.addListener({
+                try {
+                    provider = future.get()
+                    bind()
+                } catch (e: Exception) {
+                    fail("camera provider unavailable: ${e.message}", false)
+                }
+            }, ContextCompat.getMainExecutor(activity))
+        } catch (e: Exception) {
+            fail("camera provider unavailable: ${e.message}", false)
+        }
     }
 
     private fun hostStarted(): Boolean {
@@ -779,18 +783,18 @@ private class SnapSession(
         released = true
         main.removeCallbacks(timeout)
         main.removeCallbacks(settleCap)
-        meterUseCase?.clearAnalyzer()
-        val bound = listOfNotNull(imageCapture, meterUseCase)
-        if (bound.isNotEmpty()) {
-            try {
-                provider?.unbind(*bound.toTypedArray())
-            } catch (e: Exception) {
-                Log.w(TAG, "snap: unbind failed: ${e.message}")
-            }
+        try {
+            meterUseCase?.clearAnalyzer()
+            val bound = listOfNotNull(imageCapture, meterUseCase)
+            if (bound.isNotEmpty()) provider?.unbind(*bound.toTypedArray())
+            registry.currentState = Lifecycle.State.DESTROYED
+        } catch (e: Exception) {
+            Log.w(TAG, "snap: release failed: ${e.message}")
+        } finally {
+            worker.shutdown()
+            // A stuck slot would make every later snap :busy.
+            onReleased()
         }
-        registry.currentState = Lifecycle.State.DESTROYED
-        worker.shutdown()
-        onReleased()
     }
 
     companion object {
