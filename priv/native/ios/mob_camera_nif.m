@@ -823,13 +823,16 @@ static MobSnapSession *g_snap = nil;
 }
 
 // mob_camera_queue(). Ends the snap: stops the camera, then messages the caller.
+// teardown drops g_snap — possibly the last strong reference to self, and ARC
+// does not retain self across a method — so nothing after it may touch an ivar.
 - (void)failWithAtom:(const char *)atom text:(NSString *)text {
     if (_done)
         return;
     _done = YES;
+    ErlNifPid pid = _pid;
     [self teardown];
     NSLog(@"[mob/camera] snap failed: %s", atom ?: text.UTF8String);
-    snap_send_error(_pid, atom, text);
+    snap_send_error(pid, atom, text);
 }
 
 // mob_camera_queue(). Idempotent.
@@ -1001,11 +1004,11 @@ static MobSnapSession *g_snap = nil;
           return;
       }
       self->_done = YES;
-      [self teardown];
       ErlNifPid pid = self->_pid;
       NSString *facing = self->_facing;
       int max_size = self->_maxSize;
       int quality = self->_quality;
+      [self teardown];
       dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         size_t w = 0, h = 0;
         NSString *err = nil;
@@ -1064,12 +1067,14 @@ static ERL_NIF_TERM nif_camera_snap(ErlNifEnv *env, int argc, const ERL_NIF_TERM
             snap_send_error(pid, "busy", nil);
             return;
         }
-        g_snap = [[MobSnapSession alloc] initWithPid:pid
-                                              facing:facing
-                                               flash:flash
-                                             maxSize:max_size
-                                             quality:quality];
-        [g_snap start];
+        // A local strong ref: start may end the snap, and teardown nils g_snap.
+        MobSnapSession *snap = [[MobSnapSession alloc] initWithPid:pid
+                                                            facing:facing
+                                                             flash:flash
+                                                           maxSize:max_size
+                                                           quality:quality];
+        g_snap = snap;
+        [snap start];
       });
     });
     return enif_make_atom(env, "ok");
