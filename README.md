@@ -74,20 +74,26 @@ settle (so the frame isn't black), shoots, releases the camera and writes an
 the app's cache/temp dir. `max_size` caps the longest side (`nil` = full
 sensor resolution). It never prompts for permission: request `:camera` first,
 or you get `{:camera, :snap_error, :permission}`. Exactly one message arrives
-per `:ok`; Android gives up after 10 s with an error string. Bad options return
+per `:ok`; both platforms give up after 10 s (`:busy`/`:background` when
+that's why, else an error string). Bad options return
 `{:error, {:invalid_option, key, value}}` / `{:error, {:unknown_option, key}}`
 and nothing is sent.
 
-- **Android**: CameraX `ImageCapture` (no `Preview`) on its own
-  `LifecycleOwner`, so the activity's lifecycle is untouched; a running
-  `Mob.UI.camera_preview/1` pauses while the snap holds the camera and resumes
-  after. `:background` when no activity is started (Android refuses the
-  camera to background apps).
+- **Android**: CameraX `ImageCapture` plus a small frame-dropping
+  `ImageAnalysis` stream for 3A metering (no `Preview`) on its own
+  `LifecycleOwner`, so the activity's lifecycle is untouched; core's
+  `Mob.UI.camera_preview/1` view, if running, pauses while the snap holds the
+  camera and resumes after. Upright by gravity (`OrientationEventListener`),
+  falling back to the display rotation when the phone lies flat.
+  `:background` when no activity is started (Android refuses the camera to
+  background apps). `max_size: nil` decodes the full-size photo in memory.
 - **iOS**: a private `AVCaptureSession` + `AVCapturePhotoOutput` (no preview
   layer), upright by gravity (`AVCaptureDeviceRotationCoordinator`). `:busy`
-  while a `start_preview/2` / `start_frame_stream/2` session or a
-  `capture_photo/2` / `capture_video/2` picker is open. The simulator has no
-  camera: `:no_camera`.
+  while the shared `start_preview/2` / `start_frame_stream/2` session runs —
+  it keeps running after `stop_frame_stream/1` until `stop_preview/1` — or a
+  `capture_photo/2` / `capture_video/2` picker is open. `max_size: nil` uses
+  the largest photo size the format supports (up to 48 MP). The simulator
+  has no camera: `:no_camera`.
 
 For real-time work (object detection, AR, custom filters), stream frames
 (**iOS only** — see [Platform support](#platform-support)):

@@ -231,8 +231,9 @@ defmodule MobCamera do
       request `:camera` first with `Mob.Permissions.request/2`.
     * `:busy` — another snap is in progress, the camera is held elsewhere
       (Android, after the camera stayed in use until the timeout), or, on iOS,
-      a `start_preview/2` / `start_frame_stream/2` session or a
-      `capture_photo/2` / `capture_video/2` picker is open.
+      the shared `start_preview/2` / `start_frame_stream/2` session is running
+      (it keeps running after `stop_frame_stream/1` until `stop_preview/1`) or
+      a `capture_photo/2` / `capture_video/2` picker is open.
     * `:background` — the app has no foreground activity/scene; neither OS
       gives the camera to a backgrounded app.
     * a `String.t()` describing a platform error (including the native

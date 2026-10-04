@@ -42,6 +42,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.util.Size
+import android.view.OrientationEventListener
 import android.view.Surface
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.ActivityResultRegistryOwner
@@ -434,6 +435,17 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
     // One snap at a time; cleared once the camera is unbound again.
     private val snapInFlight = AtomicBoolean(false)
 
+    // Replies that don't need a session. This runs on the BEAM scheduler
+    // thread that called the NIF, and enif_send with a NULL env is only for
+    // non-ERTS threads, so the reply goes out from the main looper.
+    private fun snapErrorLater(
+        pid: Long,
+        reason: String,
+        atom: Boolean,
+    ) {
+        Handler(Looper.getMainLooper()).post { nativeDeliverSnapError(pid, reason, atom) }
+    }
+
     @JvmStatic
     fun camera_snap(
         pid: Long,
@@ -443,21 +455,15 @@ object MobCameraBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermis
             try {
                 SnapOptions.parse(optsJson)
             } catch (e: Exception) {
-                nativeDeliverSnapError(pid, "invalid snap options: ${e.message}", false)
-                return
+                return snapErrorLater(pid, "invalid snap options: ${e.message}", false)
             }
-        if (!snapInFlight.compareAndSet(false, true)) {
-            nativeDeliverSnapError(pid, "busy", true)
-            return
-        }
+        if (!snapInFlight.compareAndSet(false, true)) return snapErrorLater(pid, "busy", true)
         val activity = activityRef?.get()
         if (activity == null) {
             snapInFlight.set(false)
-            nativeDeliverSnapError(pid, "no activity attached to the camera bridge", false)
-            return
+            return snapErrorLater(pid, "no activity attached to the camera bridge", false)
         }
-        // LifecycleRegistry and bindToLifecycle are main-thread only; the NIF
-        // calls this from a BEAM scheduler thread.
+        // LifecycleRegistry and bindToLifecycle are main-thread only.
         ContextCompat.getMainExecutor(activity).execute {
             SnapSession(activity, pid, opts) { snapInFlight.set(false) }.start()
         }
@@ -523,6 +529,11 @@ private class SnapSession(
     private var lastCameraError: CameraState.StateError? = null
     private var shotRequested = false
     private var released = false
+    private var orientationListener: OrientationEventListener? = null
+
+    // Device tilt in degrees (0..359) from the accelerometer, or UNKNOWN when
+    // the phone lies flat or there's no sensor.
+    @Volatile private var deviceDegrees = OrientationEventListener.ORIENTATION_UNKNOWN
 
     private val timeout = Runnable { timedOut() }
     private val settleCap = Runnable { shoot("settle cap reached, last 3A $last3A") }
@@ -571,13 +582,33 @@ private class SnapSession(
             return fail("permission", true)
         }
 
-        val capture =
+        // Upright follows gravity, like iOS, not the display: a
+        // portrait-locked app held sideways still gets an upright photo.
+        orientationListener =
+            object : OrientationEventListener(activity) {
+                override fun onOrientationChanged(orientation: Int) {
+                    deviceDegrees = orientation
+                }
+            }.also { if (it.canDetectOrientation()) it.enable() }
+
+        val captureBuilder =
             ImageCapture
                 .Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .setFlashMode(opts.flashMode)
                 .setTargetRotation(displayRotation())
-                .build()
+        // Capture the smallest size that still covers max_size rather than
+        // the full sensor, then scale down; nil keeps CameraX's maximum.
+        opts.maxSize?.let { max ->
+            captureBuilder.setResolutionSelector(
+                ResolutionSelector
+                    .Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(Size(max, maxOf(1, max * 3 / 4)), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER),
+                    ).build(),
+            )
+        }
+        val capture = captureBuilder.build()
         // A small analysis stream is the repeating request 3A runs on; its
         // results carry the AE/AF/AWB states we wait on before shooting. (A
         // capture callback on ImageCapture itself never sees repeating
@@ -631,6 +662,20 @@ private class SnapSession(
             activity.windowManager.defaultDisplay.rotation
         }
 
+    // The Surface rotation that makes the shot upright for how the phone is
+    // held (CameraX's documented OrientationEventListener mapping); the display
+    // rotation when the phone lies flat or tilt is unknown.
+    private fun uprightRotation(): Int {
+        val degrees = deviceDegrees
+        return when {
+            degrees == OrientationEventListener.ORIENTATION_UNKNOWN -> displayRotation()
+            degrees in 45 until 135 -> Surface.ROTATION_270
+            degrees in 135 until 225 -> Surface.ROTATION_180
+            degrees in 225 until 315 -> Surface.ROTATION_90
+            else -> Surface.ROTATION_0
+        }
+    }
+
     // AE/AWB converged (or locked, or not reported) and AF not mid-scan. In a
     // continuous AF mode the first passive scan must also have finished
     // (INACTIVE there means it hasn't started yet). AF_MODE_AUTO only scans
@@ -680,7 +725,8 @@ private class SnapSession(
         val capture = imageCapture ?: return
         shotRequested = true
         main.removeCallbacks(settleCap)
-        Log.i(TAG, "snap: taking picture (${opts.facing}, $why)")
+        capture.targetRotation = uprightRotation()
+        Log.i(TAG, "snap: taking picture (${opts.facing}, $why, tilt $deviceDegrees)")
         capture.takePicture(
             worker,
             object : ImageCapture.OnImageCapturedCallback() {
@@ -711,19 +757,40 @@ private class SnapSession(
         val deliver: () -> Unit =
             try {
                 val upright = uprightScaled(decoded, rotation, opts.maxSize)
+                if (upright !== decoded) decoded.recycle()
                 val file = File(activity.cacheDir, "mob_snap_${System.currentTimeMillis()}_${SEQ.incrementAndGet()}.jpg")
-                file.outputStream().use { upright.compress(Bitmap.CompressFormat.JPEG, opts.quality, it) }
-                // Pixels are already upright; say so explicitly.
-                ExifInterface(file.absolutePath).apply {
-                    setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
-                    saveAttributes()
+                val written =
+                    try {
+                        file.outputStream().use { upright.compress(Bitmap.CompressFormat.JPEG, opts.quality, it) }
+                    } catch (e: Throwable) {
+                        file.delete()
+                        throw e
+                    }
+                if (!written) {
+                    file.delete()
+                    error("JPEG encoder failed")
                 }
+                stampOrientationNormal(file)
                 Log.i(TAG, "snap: wrote ${upright.width}x${upright.height} ${file.absolutePath}")
                 ({ MobCameraBridge.nativeDeliverSnapped(pid, file.absolutePath, upright.width, upright.height, opts.facing) })
             } catch (e: Throwable) {
                 ({ MobCameraBridge.nativeDeliverSnapError(pid, "could not write the photo: ${e.message}", false) })
             }
         main.post { deliver() }
+    }
+
+    // Bitmap.compress writes no EXIF (orientation 1 by default); the explicit
+    // tag is for readers that want to see it. Its failure doesn't spoil a
+    // good photo.
+    private fun stampOrientationNormal(file: File) {
+        try {
+            ExifInterface(file.absolutePath).apply {
+                setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+                saveAttributes()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "snap: could not tag EXIF orientation: ${e.message}")
+        }
     }
 
     // JPEG (the ImageCapture default) is decoded with a power-of-two sample
@@ -783,14 +850,20 @@ private class SnapSession(
         released = true
         main.removeCallbacks(timeout)
         main.removeCallbacks(settleCap)
+        orientationListener?.disable()
         try {
             meterUseCase?.clearAnalyzer()
             val bound = listOfNotNull(imageCapture, meterUseCase)
             if (bound.isNotEmpty()) provider?.unbind(*bound.toTypedArray())
-            registry.currentState = Lifecycle.State.DESTROYED
         } catch (e: Exception) {
-            Log.w(TAG, "snap: release failed: ${e.message}")
+            Log.w(TAG, "snap: unbind failed: ${e.message}")
         } finally {
+            try {
+                // Destroying the owner unbinds its use cases too.
+                registry.currentState = Lifecycle.State.DESTROYED
+            } catch (e: Exception) {
+                Log.w(TAG, "snap: lifecycle teardown failed: ${e.message}")
+            }
             worker.shutdown()
             // A stuck slot would make every later snap :busy.
             onReleased()
