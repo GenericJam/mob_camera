@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.12] - 2026-10-04
+
+### Added
+- **`MobCamera.snap/1`: headless still capture** (MOB-386). Takes one photo
+  with no preview and no user action: opens the camera, waits for
+  exposure/focus/white balance to settle, shoots, releases the camera and
+  writes an upright JPEG (orientation applied to the pixels, EXIF
+  orientation 1) to the app's cache/temp dir. The calling process — any
+  process, not just a screen — gets `{:camera, :snapped, %{path, width,
+  height, facing}}` or `{:camera, :snap_error, reason}` with `reason` one of
+  `:no_camera`, `:permission`, `:busy`, `:background` or a platform error
+  string. Options: `facing:`, `flash:`, `max_size:` (default 1600 px, `nil`
+  for full resolution), `quality:` (default 85). Android: CameraX
+  `ImageCapture` on its own lifecycle owner, 10 s native timeout. iOS:
+  `AVCaptureSession` + `AVCapturePhotoOutput`, gravity-based upright angle;
+  the simulator reports `:no_camera`.
+- `MobCamera.snap_opts/1`, the pure option validation behind `snap/1`.
+- The demo screen has a "Snap (no shutter)" button.
+
 ## [0.1.11] - 2026-09-30
 
 ### Fixed

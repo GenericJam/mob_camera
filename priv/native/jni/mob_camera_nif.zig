@@ -25,6 +25,7 @@ const CamMethods = struct {
     stop_preview: jni.JMethodID = null,
     start_frame_stream: jni.JMethodID = null,
     stop_frame_stream: jni.JMethodID = null,
+    snap: jni.JMethodID = null,
 };
 
 var g_cam: CamMethods = .{};
@@ -40,6 +41,7 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeRegister(jenv: *jni.JNIEnv, c
     g_cam.stop_preview = jni.getStaticMethodID(jenv, cls, "camera_stop_preview", "()V");
     g_cam.start_frame_stream = jni.getStaticMethodID(jenv, cls, "camera_start_frame_stream", "(JLjava/lang/String;)V");
     g_cam.stop_frame_stream = jni.getStaticMethodID(jenv, cls, "camera_stop_frame_stream", "()V");
+    g_cam.snap = jni.getStaticMethodID(jenv, cls, "camera_snap", "(JLjava/lang/String;)V");
 }
 
 // ── Thread-attach + pid round-trip helpers (mirror mob-core / location) ───
@@ -216,6 +218,76 @@ export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverCameraCancelled(
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
+fn binaryTerm(env: *erts.ErlNifEnv, s: [*:0]const u8) ?erts.ERL_NIF_TERM {
+    const n = std.mem.len(s);
+    var bin: erts.ErlNifBinary = undefined;
+    if (erts.enif_alloc_binary(n, &bin) == 0) return null;
+    @memcpy(bin.data[0..n], s[0..n]);
+    return erts.enif_make_binary(env, &bin);
+}
+
+// {:camera, :snapped, %{path, width, height, facing}}. MUST match
+// MobCameraBridge.kt's `external fun nativeDeliverSnapped` slot-for-slot.
+export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverSnapped(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    pid_long: jni.JLong,
+    path: jni.JString,
+    width: jni.JInt,
+    height: jni.JInt,
+    facing: jni.JString,
+) callconv(.c) void {
+    _ = cls;
+    if (path == null or facing == null) return;
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+
+    const path_c = jenv.*.GetStringUTFChars.?(jenv, path, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, path, path_c);
+    const facing_c = jenv.*.GetStringUTFChars.?(jenv, facing, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, facing, facing_c);
+
+    const path_term = binaryTerm(env, path_c) orelse return;
+    const map = erts.makeMap(env, &[_]erts.ERL_NIF_TERM{
+        erts.atom(env, "path"),
+        erts.atom(env, "width"),
+        erts.atom(env, "height"),
+        erts.atom(env, "facing"),
+    }, &[_]erts.ERL_NIF_TERM{
+        path_term,
+        erts.enif_make_int(env, width),
+        erts.enif_make_int(env, height),
+        erts.enif_make_atom(env, facing_c),
+    }) orelse return;
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.atom(env, "snapped"), map });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+// {:camera, :snap_error, reason}: reason is an atom when is_atom (no_camera,
+// permission, busy, background), else a binary with the platform error text.
+// MUST match MobCameraBridge.kt's `external fun nativeDeliverSnapError`.
+export fn Java_io_mob_camera_MobCameraBridge_nativeDeliverSnapError(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    pid_long: jni.JLong,
+    reason: jni.JString,
+    is_atom: jni.JBoolean,
+) callconv(.c) void {
+    _ = cls;
+    if (reason == null) return;
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+
+    const reason_c = jenv.*.GetStringUTFChars.?(jenv, reason, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, reason, reason_c);
+
+    const reason_term = if (is_atom != 0) erts.enif_make_atom(env, reason_c) else binaryTerm(env, reason_c) orelse return;
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "camera"), erts.atom(env, "snap_error"), reason_term });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
 // ── NIFs ──────────────────────────────────────────────────────────────────
 fn nif_camera_capture_photo(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
@@ -280,6 +352,26 @@ fn nif_camera_stop_frame_stream(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]con
     return callBridgeVoid(env, g_cam.stop_frame_stream);
 }
 
+// Async: the outcome arrives as {:camera, :snapped | :snap_error, _}. The
+// synchronous {:error, :unavailable} only covers a bridge that never registered.
+fn nif_camera_snap(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    var jbuf: [512]u8 = undefined;
+    if (!binArgZ(env, argv[0], &jbuf)) return erts.badarg(env);
+    if (g_cam_cls == null or g_cam.snap == null) {
+        return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "unavailable") });
+    }
+    var pid: erts.ErlNifPid = undefined;
+    _ = erts.enif_self(env, &pid);
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "unavailable") });
+    const jarg = jni.newStringUTF(jenv, @ptrCast(&jbuf));
+    jenv.*.CallStaticVoidMethod.?(jenv, g_cam_cls, g_cam.snap, pidToJlong(pid), jarg);
+    if (jarg != null) jni.deleteLocalRef(jenv, jarg);
+    detachIfAttached(attached);
+    return erts.ok(env);
+}
+
 // ── NIF table + init entry point ─────────────────────────────────────────
 fn nifLoad(env: ?*erts.ErlNifEnv, priv: *?*anyopaque, info: erts.ERL_NIF_TERM) callconv(.c) c_int {
     _ = env;
@@ -295,6 +387,7 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "camera_stop_preview", .arity = 0, .fptr = nif_camera_stop_preview, .flags = 0 },
     .{ .name = "camera_start_frame_stream", .arity = 1, .fptr = nif_camera_start_frame_stream, .flags = 0 },
     .{ .name = "camera_stop_frame_stream", .arity = 0, .fptr = nif_camera_stop_frame_stream, .flags = 0 },
+    .{ .name = "camera_snap", .arity = 1, .fptr = nif_camera_snap, .flags = 0 },
 };
 
 var nif_entry: erts.ErlNifEntry = .{

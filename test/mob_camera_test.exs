@@ -213,7 +213,8 @@ defmodule MobCameraTest do
             camera_start_preview: 1,
             camera_stop_preview: 0,
             camera_start_frame_stream: 1,
-            camera_stop_frame_stream: 0
+            camera_stop_frame_stream: 0,
+            camera_snap: 1
           ] do
         assert fa in exports, "#{inspect(fa)} missing from mob_camera_nif exports"
       end
@@ -289,6 +290,63 @@ defmodule MobCameraTest do
     end
   end
 
+  describe "snap_opts/1" do
+    test "defaults: back camera, no flash, 1600 px longest side, quality 85" do
+      assert MobCamera.snap_opts([]) ==
+               {:ok, %{"facing" => "back", "flash" => "off", "max_size" => 1600, "quality" => 85}}
+    end
+
+    test "every option overrides its default; boundaries are accepted" do
+      assert MobCamera.snap_opts(facing: :front, flash: :auto, max_size: 1, quality: 100) ==
+               {:ok, %{"facing" => "front", "flash" => "auto", "max_size" => 1, "quality" => 100}}
+
+      assert {:ok, %{"flash" => "on", "quality" => 1}} =
+               MobCamera.snap_opts(flash: :on, quality: 1)
+    end
+
+    test "max_size: nil (full sensor resolution) reaches the NIF as JSON null, not \"nil\"" do
+      {:ok, opts} = MobCamera.snap_opts(max_size: nil)
+      json = opts |> :json.encode() |> IO.iodata_to_binary()
+
+      refute json =~ ~s("nil")
+      assert %{"max_size" => :null} = :json.decode(json)
+    end
+
+    test "out-of-range or mistyped values are rejected with the offending key and value" do
+      for {key, value} <- [
+            facing: :left,
+            facing: "back",
+            flash: true,
+            max_size: 0,
+            max_size: -5,
+            max_size: 1600.0,
+            quality: 0,
+            quality: 101,
+            quality: 85.5
+          ] do
+        assert MobCamera.snap_opts([{key, value}]) == {:error, {:invalid_option, key, value}}
+      end
+    end
+
+    test "unknown options are rejected rather than silently ignored" do
+      assert MobCamera.snap_opts(zoom: 2) == {:error, {:unknown_option, :zoom}}
+      assert MobCamera.snap_opts([:facing]) == {:error, {:unknown_option, :facing}}
+    end
+  end
+
+  describe "snap/1" do
+    # On the host the NIF stub raises nif_not_loaded, so an error tuple here
+    # proves invalid options are refused before anything reaches the camera.
+    test "invalid options return an error without calling the NIF" do
+      assert MobCamera.snap(quality: 0) == {:error, {:invalid_option, :quality, 0}}
+      assert MobCamera.snap(lens: :wide) == {:error, {:unknown_option, :lens}}
+    end
+
+    test "valid options are handed to the NIF" do
+      assert_raise ErlangError, ~r/nif_not_loaded/, fn -> MobCamera.snap(facing: :front) end
+    end
+  end
+
   describe "public API surface (extraction parity with old Mob.Camera)" do
     test "exports the full extracted surface" do
       exports = MobCamera.__info__(:functions)
@@ -300,7 +358,10 @@ defmodule MobCameraTest do
             stop_preview: 1,
             start_frame_stream: 2,
             stop_frame_stream: 1,
-            frame_stream_opts: 1
+            frame_stream_opts: 1,
+            snap: 0,
+            snap: 1,
+            snap_opts: 1
           ] do
         assert fa in exports, "#{inspect(fa)} missing from MobCamera"
       end
@@ -314,7 +375,8 @@ defmodule MobCameraTest do
     "ByteArray" => "JByteArray",
     "Int" => "JInt",
     "String" => "JString",
-    "Double" => "JDouble"
+    "Double" => "JDouble",
+    "Boolean" => "JBoolean"
   }
 
   # each param is `name: Type,` — capture the Type (allow a `jni.`/`*` prefix in zig).
@@ -412,6 +474,42 @@ defmodule MobCameraTest do
                "#{length(zig_types)} params"
 
       assert Enum.map(kt_types, &Map.fetch!(@kt_to_zig, &1)) == zig_types
+    end
+  end
+
+  describe "snap delivery JNI contracts (MOB-386)" do
+    # Same name-only JNI binding as the two contracts above: a Kotlin
+    # `external fun` and its zig export must agree slot-for-slot.
+    setup do
+      {:ok, m} = Manifest.load(@plugin_dir)
+
+      %{
+        kt: File.read!(Path.join(@plugin_dir, m.android.bridge_kt)),
+        zig: File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_camera_nif.zig"))
+      }
+    end
+
+    test "nativeDeliverSnapped and nativeDeliverSnapError match their zig exports",
+         %{kt: kt, zig: zig} do
+      for name <- ~w(nativeDeliverSnapped nativeDeliverSnapError) do
+        [_, kt_block] = Regex.run(~r/external fun #{name}\((.*?)\)/s, kt)
+
+        [_, zig_block] =
+          Regex.run(
+            ~r/export fn Java_io_mob_camera_MobCameraBridge_#{name}\((.*?)\)\s*callconv/s,
+            zig
+          )
+
+        kt_types = param_types(kt_block)
+        zig_types = zig_block |> param_types() |> Enum.drop(2)
+
+        assert Enum.map(kt_types, &Map.fetch!(@kt_to_zig, &1)) == zig_types, name
+      end
+    end
+
+    test "the zig NIF looks up camera_snap with the Kotlin signature", %{kt: kt, zig: zig} do
+      assert kt =~ ~r/fun camera_snap\(\s*pid: Long,\s*optsJson: String,\s*\)/
+      assert zig =~ ~s|"camera_snap", "(JLjava/lang/String;)V"|
     end
   end
 end

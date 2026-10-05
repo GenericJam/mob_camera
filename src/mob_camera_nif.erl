@@ -15,7 +15,8 @@
     camera_start_preview/1,
     camera_stop_preview/0,
     camera_start_frame_stream/1,
-    camera_stop_frame_stream/0
+    camera_stop_frame_stream/0,
+    camera_snap/1
 ]).
 -on_load(init/0).
 
@@ -41,4 +42,7 @@ camera_start_frame_stream(_Json) ->
     erlang:nif_error(nif_not_loaded).
 
 camera_stop_frame_stream() ->
+    erlang:nif_error(nif_not_loaded).
+
+camera_snap(_Json) ->
     erlang:nif_error(nif_not_loaded).
