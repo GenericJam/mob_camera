@@ -6,6 +6,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+- **On-device self-test** (MOB-418). `MobCamera.SelfTest` implements
+  `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`. It
+  calls `camera_stop_preview/0`, a no-op while nothing previews, and passes
+  on `:ok`: on iOS the Objective-C NIF answered, on Android the zig NIF
+  reached the registered Kotlin `MobCameraBridge` through JNI. No camera
+  session is opened, so a simulator or emulator without a camera passes too.
+  Run it with `mix mob.selftest` from a host app (mob_dev 0.7.17). Requires
+  mob 0.9.15; `mob_version` in the manifest is now `~> 0.9`.
+- **Android: `camera_stop_preview/0` and `camera_stop_frame_stream/0` report
+  an unregistered bridge.** They answer `{:error, :bridge_not_registered}`
+  instead of calling JNI with a null class or method ID when
+  `MobCameraBridge.register()` never ran or a method-ID lookup failed.
+  `MobCamera.stop_preview/1` and `stop_frame_stream/1` are unchanged (they
+  ignore the return value); the self-test turns it into a failure.
+
 ## [0.1.12] - 2026-10-04
 
 ### Added
