@@ -26,8 +26,9 @@ defmodule MobCamera.SelfTest do
   which a self-test must not do. Capturing a frame is the feature, not the
   proof.
 
-  The host stub's `nif_not_loaded` is a failure. Run it while the host is
-  neither previewing nor streaming frames: `camera_stop_preview/0` ends both.
+  The host stub's `nif_not_loaded` is a failure. Run it while the host is not
+  previewing: `camera_stop_preview/0` ends a running preview on both
+  platforms, and on iOS also a frame stream (it drops the shared session).
   """
   @behaviour Mob.Plugin.SelfTest
 

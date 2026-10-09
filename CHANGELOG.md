@@ -11,7 +11,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Added
 - **On-device self-test** (MOB-418). `MobCamera.SelfTest` implements
   `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`. It
-  calls `camera_stop_preview/0`, a no-op while nothing previews or streams,
+  calls `camera_stop_preview/0`, a no-op while nothing previews,
   and passes on `:ok`: on iOS the Objective-C NIF answered, on Android the
   zig NIF reached the registered Kotlin `MobCameraBridge` through JNI. No
   camera session is opened, so a simulator or emulator without a camera
