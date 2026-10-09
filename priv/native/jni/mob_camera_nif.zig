@@ -78,8 +78,17 @@ fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlN
     return erts.ok(env);
 }
 
+/// {error, bridge_not_registered}: nativeRegister never ran (MobPluginBootstrap
+/// did not call MobCameraBridge.register()) or a method-ID lookup failed. The
+/// public API ignores the return value; MobCamera.SelfTest turns it into a
+/// failure (MOB-418).
+fn bridgeNotRegistered(env: ?*erts.ErlNifEnv) erts.ERL_NIF_TERM {
+    return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "bridge_not_registered") });
+}
+
 /// Call a no-arg static void bridge method.
 fn callBridgeVoid(env: ?*erts.ErlNifEnv, method: jni.JMethodID) erts.ERL_NIF_TERM {
+    if (g_cam_cls == null or method == null) return bridgeNotRegistered(env);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
     jenv.*.CallStaticVoidMethod.?(jenv, g_cam_cls, method);

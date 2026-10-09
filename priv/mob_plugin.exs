@@ -1,7 +1,10 @@
 %{
   name: :mob_camera,
-  mob_version: "~> 0.6",
+  mob_version: "~> 0.9",
   plugin_spec_version: 1,
+  # On-device proof for `mix mob.selftest` / mob_ci: camera_stop_preview/0
+  # through the NIF, no camera session opened (see Mob.Plugin.SelfTest).
+  selftest: MobCamera.SelfTest,
   description:
     "Native camera capture, live preview, and frame streaming — extracted from mob core in Wave 2",
   # A sample screen the host can navigate to by route (auto-listed by a home
