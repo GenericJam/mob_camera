@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.13] - 2026-10-09
 
 ### Added
 - **On-device self-test** (MOB-418). `MobCamera.SelfTest` implements
@@ -20,7 +20,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 - Requires mob >= 0.9.15 (was `~> 0.7`), for `Mob.Plugin.SelfTest`;
-  `mob_version` in the manifest is now `~> 0.9`.
+  `mob_version` in the manifest is now `~> 0.9` (was `~> 0.6`).
 
 ### Fixed
 - **Android: `camera_stop_preview/0` and `camera_stop_frame_stream/0` report
