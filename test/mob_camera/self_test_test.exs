@@ -24,6 +24,10 @@ defmodule MobCamera.SelfTestTest do
     def camera_stop_preview, do: :erlang.nif_error(:nif_not_loaded)
   end
 
+  defmodule CrashingNif do
+    def camera_stop_preview, do: :erlang.error(:boom)
+  end
+
   defmodule EmptyNif do
   end
 
@@ -49,6 +53,11 @@ defmodule MobCamera.SelfTestTest do
   test "any other answer fails, naming what came back and what was expected" do
     assert SelfTest.run(@emulator, NoJvmNif) ==
              {:fail, "camera_stop_preview/0 on android returned :error, expected :ok"}
+  end
+
+  test "a NIF that raises something other than nif_not_loaded is not blamed on linking" do
+    assert {:fail, reason} = SelfTest.run(@ios_sim, CrashingNif)
+    assert reason == "camera_stop_preview/0 raised Erlang error: :boom, expected :ok"
   end
 
   test "a NIF that is not loaded, or a missing export, fails naming the NIF instead of raising" do

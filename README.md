@@ -150,7 +150,7 @@ hand-rolled hosts must add it or capture returns `:cancelled`.
 
 ## Self-test
 
-`MobCamera.SelfTest` proves the native side is linked and initialised without opening the camera: run `mix mob.selftest` from a host app that depends on mob_camera (mob_dev >= 0.7.17), while no preview is running.
+`MobCamera.SelfTest` proves the native side is linked and initialised without opening the camera: run `mix mob.selftest` from a host app that depends on mob_camera (mob_dev >= 0.7.17), while no preview or frame stream is running.
 
 ## Development
 

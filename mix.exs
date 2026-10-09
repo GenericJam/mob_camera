@@ -33,9 +33,8 @@ defmodule MobCamera.MixProject do
   end
 
   defp deps do
-    # Local path deps while the plugin system is dogfooded; switch :mob to the
-    # Hex constraint ("~> 0.6") when mob publishes. :mob_dev is test-only (the
-    # manifest tests run the real pre-publish validator) and never ships.
+    # :mob_dev is test-only (the manifest tests run the real pre-publish
+    # validator) and never ships.
     [
       {:mob, "~> 0.9 and >= 0.9.15"},
       {:mob_dev, "~> 0.7.17", only: [:dev, :test], runtime: false},

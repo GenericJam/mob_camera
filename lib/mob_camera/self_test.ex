@@ -20,14 +20,14 @@ defmodule MobCamera.SelfTest do
       never called `MobCameraBridge.register()` or a method-ID lookup
       failed; `:error` means the NIF could not attach to the JVM. Both fail.
 
-  There is no `{:skip, :needs_hardware}` branch: neither platform exposes a
-  read-only "is there a camera" query, and the only call that would find
-  out (`camera_snap/1`, which reports `:no_camera`) opens a capture session,
+  There is no `{:skip, :needs_hardware}` branch: the plugin's NIF exposes no
+  read-only "is there a camera" query, and the only call that would find out
+  (`camera_snap/1`, which reports `:no_camera`) opens a capture session,
   which a self-test must not do. Capturing a frame is the feature, not the
   proof.
 
   The host stub's `nif_not_loaded` is a failure. Run it while the host is
-  not previewing: `camera_stop_preview/0` would end a running preview.
+  neither previewing nor streaming frames: `camera_stop_preview/0` ends both.
   """
   @behaviour Mob.Plugin.SelfTest
 
@@ -51,9 +51,18 @@ defmodule MobCamera.SelfTest do
         {:fail, "camera_stop_preview/0 on #{platform} returned #{inspect(other)}, expected :ok"}
     end
   rescue
-    e in [ErlangError, UndefinedFunctionError] ->
-      {:fail,
-       "#{inspect(nif)} is not linked into this build: camera_stop_preview/0 raised " <>
-         Exception.message(e)}
+    e in UndefinedFunctionError -> not_linked(nif, e)
+    e in ErlangError -> raised(nif, e)
+  end
+
+  defp raised(nif, %ErlangError{original: :nif_not_loaded} = e), do: not_linked(nif, e)
+
+  defp raised(_nif, e),
+    do: {:fail, "camera_stop_preview/0 raised #{Exception.message(e)}, expected :ok"}
+
+  defp not_linked(nif, e) do
+    {:fail,
+     "#{inspect(nif)} is not linked into this build: camera_stop_preview/0 raised " <>
+       Exception.message(e)}
   end
 end
