@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.14] - 2026-10-13
 
 ### Fixed
 - **Android: a capture, preview or frame-stream call before the bridge
