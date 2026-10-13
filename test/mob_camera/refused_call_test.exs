@@ -32,7 +32,15 @@ defmodule MobCamera.RefusedCallTest do
   ]
 
   setup do
-    on_exit(fn -> Application.delete_env(:mob_camera, :nif) end)
+    previous = Application.fetch_env(:mob_camera, :nif)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, nif} -> Application.put_env(:mob_camera, :nif, nif)
+        :error -> Application.delete_env(:mob_camera, :nif)
+      end
+    end)
+
     %{socket: Mob.Socket.new(__MODULE__)}
   end
 

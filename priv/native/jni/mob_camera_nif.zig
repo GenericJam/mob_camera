@@ -35,13 +35,23 @@ var g_cam_cls: jni.JClass = null;
 export fn Java_io_mob_camera_MobCameraBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_cam_cls = jni.newGlobalRef(jenv, cls);
     if (g_cam_cls == null) return;
+    // A failed lookup leaves NoSuchMethodError pending, which would break the
+    // next JNI call and throw out of register(); clear it so the method ID
+    // stays null and its NIF answers {error, bridge_not_registered} (MOB-424).
     g_cam.capture_photo = jni.getStaticMethodID(jenv, cls, "camera_capture_photo", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.capture_video = jni.getStaticMethodID(jenv, cls, "camera_capture_video", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.start_preview = jni.getStaticMethodID(jenv, cls, "camera_start_preview", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.stop_preview = jni.getStaticMethodID(jenv, cls, "camera_stop_preview", "()V");
+    jni.exceptionClear(jenv);
     g_cam.start_frame_stream = jni.getStaticMethodID(jenv, cls, "camera_start_frame_stream", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.stop_frame_stream = jni.getStaticMethodID(jenv, cls, "camera_stop_frame_stream", "()V");
+    jni.exceptionClear(jenv);
     g_cam.snap = jni.getStaticMethodID(jenv, cls, "camera_snap", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
 }
 
 // ── Thread-attach + pid round-trip helpers (mirror mob-core / location) ───

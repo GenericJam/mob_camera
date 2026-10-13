@@ -16,7 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `MobCameraBridge` class and method ID without checking them, so a call
   before `MobCameraBridge.register()` ran (or after a failed method-ID
   lookup) crashed the app. They now answer `{:error, :bridge_not_registered}`
-  like `camera_stop_preview/0` already did.
+  like `camera_stop_preview/0` already did. `nativeRegister` now clears the
+  `NoSuchMethodError` a failed method-ID lookup leaves pending, so that
+  method ID stays null instead of the error being thrown out of
+  `MobCameraBridge.register()`.
 - **The `MobCamera` functions that return the socket log a refused call.**
   `capture_photo/2`, `capture_video/2`, `start_preview/2`, `stop_preview/1`,
   `start_frame_stream/2` and `stop_frame_stream/1` log a warning naming the
