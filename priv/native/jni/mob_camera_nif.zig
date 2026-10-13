@@ -35,13 +35,23 @@ var g_cam_cls: jni.JClass = null;
 export fn Java_io_mob_camera_MobCameraBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_cam_cls = jni.newGlobalRef(jenv, cls);
     if (g_cam_cls == null) return;
+    // A failed lookup leaves NoSuchMethodError pending, which would break the
+    // next JNI call and throw out of register(); clear it so the method ID
+    // stays null and its NIF answers {error, bridge_not_registered} (MOB-424).
     g_cam.capture_photo = jni.getStaticMethodID(jenv, cls, "camera_capture_photo", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.capture_video = jni.getStaticMethodID(jenv, cls, "camera_capture_video", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.start_preview = jni.getStaticMethodID(jenv, cls, "camera_start_preview", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.stop_preview = jni.getStaticMethodID(jenv, cls, "camera_stop_preview", "()V");
+    jni.exceptionClear(jenv);
     g_cam.start_frame_stream = jni.getStaticMethodID(jenv, cls, "camera_start_frame_stream", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
     g_cam.stop_frame_stream = jni.getStaticMethodID(jenv, cls, "camera_stop_frame_stream", "()V");
+    jni.exceptionClear(jenv);
     g_cam.snap = jni.getStaticMethodID(jenv, cls, "camera_snap", "(JLjava/lang/String;)V");
+    jni.exceptionClear(jenv);
 }
 
 // ── Thread-attach + pid round-trip helpers (mirror mob-core / location) ───
@@ -67,8 +77,11 @@ inline fn pidFromLong(jpid: jni.JLong) erts.ErlNifPid {
 }
 
 /// Call `MobCameraBridge.<method>(pid_long, arg)` — async; results land later
-/// via the deliver thunks. Returns :ok unconditionally.
+/// via the deliver thunks. Returns :ok once the call is handed to the bridge,
+/// {error, bridge_not_registered} when the bridge class or method ID is not
+/// cached, :error when no JNI env can be attached.
 fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlNifPid, arg: ?[*:0]const u8) erts.ERL_NIF_TERM {
+    if (g_cam_cls == null or method == null) return bridgeNotRegistered(env);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
     const jarg: jni.JString = if (arg) |a| jni.newStringUTF(jenv, a) else null;
@@ -80,7 +93,7 @@ fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlN
 
 /// {error, bridge_not_registered}: nativeRegister never ran (MobPluginBootstrap
 /// did not call MobCameraBridge.register()) or a method-ID lookup failed. The
-/// public API ignores the return value; MobCamera.SelfTest turns it into a
+/// MobCamera wrappers log it as a warning; MobCamera.SelfTest turns it into a
 /// failure (MOB-418).
 fn bridgeNotRegistered(env: ?*erts.ErlNifEnv) erts.ERL_NIF_TERM {
     return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "bridge_not_registered") });
