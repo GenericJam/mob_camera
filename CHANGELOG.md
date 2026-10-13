@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Android: a capture, preview or frame-stream call before the bridge
+  registers no longer aborts the VM** (MOB-424). `camera_capture_photo/1`,
+  `camera_capture_video/1`, `camera_start_preview/1` and
+  `camera_start_frame_stream/1` called JNI through the cached
+  `MobCameraBridge` class and method ID without checking them, so a call
+  before `MobCameraBridge.register()` ran (or after a failed method-ID
+  lookup) crashed the app. They now answer `{:error, :bridge_not_registered}`
+  like `camera_stop_preview/0` already did.
+- **The `MobCamera` functions that return the socket log a refused call.**
+  `capture_photo/2`, `capture_video/2`, `start_preview/2`, `stop_preview/1`,
+  `start_frame_stream/2` and `stop_frame_stream/1` log a warning naming the
+  function and the reason when the NIF answers `{:error, reason}`, instead of
+  dropping it. They still return the socket.
+
 ## [0.1.13] - 2026-10-09
 
 ### Added

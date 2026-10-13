@@ -62,7 +62,17 @@ defmodule MobCamera do
       use Mob.Sigil
       # in render/1:
       {Mob.UI.camera_preview(facing: :back)}
+
+  ## When the native side refuses a call
+
+  The functions that return the socket keep returning it. When the native side
+  refuses the call (on Android, `{:error, :bridge_not_registered}` when
+  `MobCameraBridge` never registered), they log a warning naming the function
+  and the reason, and no `{:camera, …}` message follows. `mix mob.selftest`
+  reports an unregistered bridge before you get that far.
   """
+
+  require Logger
 
   @doc """
   Open the camera to capture a photo.
@@ -73,7 +83,7 @@ defmodule MobCamera do
   @spec capture_photo(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def capture_photo(socket, opts \\ []) do
     quality = Keyword.get(opts, :quality, :high)
-    :mob_camera_nif.camera_capture_photo(quality)
+    warn_on_error(nif().camera_capture_photo(quality), "capture_photo/2")
     socket
   end
 
@@ -86,7 +96,7 @@ defmodule MobCamera do
   @spec capture_video(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def capture_video(socket, opts \\ []) do
     max_duration = Keyword.get(opts, :max_duration, 60)
-    :mob_camera_nif.camera_capture_video(max_duration)
+    warn_on_error(nif().camera_capture_video(max_duration), "capture_video/2")
     socket
   end
 
@@ -105,14 +115,19 @@ defmodule MobCamera do
   @spec start_preview(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def start_preview(socket, opts \\ []) do
     facing = Keyword.get(opts, :facing, :back) |> Atom.to_string()
-    :mob_camera_nif.camera_start_preview(:json.encode(%{"facing" => facing}))
+
+    warn_on_error(
+      nif().camera_start_preview(:json.encode(%{"facing" => facing})),
+      "start_preview/2"
+    )
+
     socket
   end
 
   @doc "Stop the active camera preview session."
   @spec stop_preview(Mob.Socket.t()) :: Mob.Socket.t()
   def stop_preview(socket) do
-    :mob_camera_nif.camera_stop_preview()
+    warn_on_error(nif().camera_stop_preview(), "stop_preview/1")
     socket
   end
 
@@ -164,7 +179,11 @@ defmodule MobCamera do
   """
   @spec start_frame_stream(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def start_frame_stream(socket, opts \\ []) do
-    :mob_camera_nif.camera_start_frame_stream(:json.encode(frame_stream_opts(opts)))
+    warn_on_error(
+      nif().camera_start_frame_stream(:json.encode(frame_stream_opts(opts))),
+      "start_frame_stream/2"
+    )
+
     socket
   end
 
@@ -203,7 +222,7 @@ defmodule MobCamera do
   """
   @spec stop_frame_stream(Mob.Socket.t()) :: Mob.Socket.t()
   def stop_frame_stream(socket) do
-    :mob_camera_nif.camera_stop_frame_stream()
+    warn_on_error(nif().camera_stop_frame_stream(), "stop_frame_stream/1")
     socket
   end
 
@@ -269,7 +288,7 @@ defmodule MobCamera do
   @spec snap(keyword()) :: :ok | {:error, term()}
   def snap(opts \\ []) do
     with {:ok, native_opts} <- snap_opts(opts) do
-      :mob_camera_nif.camera_snap(:json.encode(native_opts))
+      nif().camera_snap(:json.encode(native_opts))
     end
   end
 
@@ -315,4 +334,13 @@ defmodule MobCamera do
   defp valid_snap_opt?(:flash, v), do: v in [:off, :on, :auto]
   defp valid_snap_opt?(:max_size, v), do: is_nil(v) or (is_integer(v) and v > 0)
   defp valid_snap_opt?(:quality, v), do: is_integer(v) and v in 1..100
+
+  # The NIF module. Tests put a stub in the :mob_camera app env.
+  defp nif, do: Application.get_env(:mob_camera, :nif, :mob_camera_nif)
+
+  defp warn_on_error({:error, reason}, function) do
+    Logger.warning("MobCamera.#{function}: the native side refused the call: #{inspect(reason)}")
+  end
+
+  defp warn_on_error(_answer, _function), do: :ok
 end
