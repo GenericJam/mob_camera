@@ -143,7 +143,7 @@ static void present_image_picker(ErlNifPid pid, UIImagePickerControllerSourceTyp
       // (video, with the default image-only types) throws and aborts the app.
       if (mode == UIImagePickerControllerCameraCaptureModeVideo) {
           picker.mediaTypes = @[ UTTypeMovie.identifier ];
-          picker.videoMaximumDuration = max_sec;
+          if (max_sec > 0) picker.videoMaximumDuration = max_sec;
       }
       picker.cameraCaptureMode = mode;
       g_camera_delegate = [[MobCameraDelegate alloc] init];
