@@ -91,7 +91,8 @@ defmodule MobCamera do
   Open the camera to record a video.
 
   Options:
-    - `max_duration: integer` — maximum clip length in seconds (default `60`)
+    - `max_duration: integer` — maximum clip length in seconds (default `60`).
+      iOS only for now (the picker stops recording there); Android ignores it.
   """
   @spec capture_video(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def capture_video(socket, opts \\ []) do
