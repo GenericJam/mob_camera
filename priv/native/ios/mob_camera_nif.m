@@ -104,14 +104,17 @@ static MobCameraDelegate *g_camera_delegate = nil;
           NSString *tmp = [NSTemporaryDirectory()
               stringByAppendingPathComponent:[NSString stringWithFormat:@"mob_video_%@.mp4",
                                                                         [NSUUID UUID].UUIDString]];
-          if (url)
-              [[NSFileManager defaultManager] copyItemAtPath:url.path toPath:tmp error:nil];
+          double duration = 0.0;
+          if (url && [[NSFileManager defaultManager] copyItemAtPath:url.path toPath:tmp error:nil]) {
+              CMTime t = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:tmp] options:nil].duration;
+              if (CMTIME_IS_NUMERIC(t)) duration = CMTimeGetSeconds(t);
+          }
           const char *path = tmp.UTF8String;
           ErlNifBinary pbin;
           enif_alloc_binary(strlen(path), &pbin);
           memcpy(pbin.data, path, strlen(path));
           ERL_NIF_TERM keys[2] = {enif_make_atom(e, "path"), enif_make_atom(e, "duration")};
-          ERL_NIF_TERM vals[2] = {enif_make_binary(e, &pbin), enif_make_double(e, 0.0)};
+          ERL_NIF_TERM vals[2] = {enif_make_binary(e, &pbin), enif_make_double(e, duration)};
           ERL_NIF_TERM map;
           enif_make_map_from_arrays(e, keys, vals, 2, &map);
           msg = enif_make_tuple3(e, enif_make_atom(e, "camera"), enif_make_atom(e, "video"), map);
@@ -128,7 +131,7 @@ static MobCameraDelegate *g_camera_delegate = nil;
 @end
 
 static void present_image_picker(ErlNifPid pid, UIImagePickerControllerSourceType src,
-                                 UIImagePickerControllerCameraCaptureMode mode) {
+                                 UIImagePickerControllerCameraCaptureMode mode, int max_sec) {
     dispatch_async(dispatch_get_main_queue(), ^{
       if (![UIImagePickerController isSourceTypeAvailable:src]) {
           cam_send2(&pid, "camera", "not_available");
@@ -136,10 +139,13 @@ static void present_image_picker(ErlNifPid pid, UIImagePickerControllerSourceTyp
       }
       UIImagePickerController *picker = [[UIImagePickerController alloc] init];
       picker.sourceType = src;
-      picker.cameraCaptureMode = mode;
+      // mediaTypes first: setting a capture mode the media types don't allow
+      // (video, with the default image-only types) throws and aborts the app.
       if (mode == UIImagePickerControllerCameraCaptureModeVideo) {
           picker.mediaTypes = @[ UTTypeMovie.identifier ];
+          picker.videoMaximumDuration = max_sec;
       }
+      picker.cameraCaptureMode = mode;
       g_camera_delegate = [[MobCameraDelegate alloc] init];
       g_camera_delegate.pid = pid;
       g_camera_delegate.isVideo = (mode == UIImagePickerControllerCameraCaptureModeVideo);
@@ -153,7 +159,7 @@ static ERL_NIF_TERM nif_camera_capture_photo(ErlNifEnv *env, int argc, const ERL
     ErlNifPid pid;
     enif_self(env, &pid);
     present_image_picker(pid, UIImagePickerControllerSourceTypeCamera,
-                         UIImagePickerControllerCameraCaptureModePhoto);
+                         UIImagePickerControllerCameraCaptureModePhoto, 0);
     return enif_make_atom(env, "ok");
 }
 
@@ -163,7 +169,7 @@ static ERL_NIF_TERM nif_camera_capture_video(ErlNifEnv *env, int argc, const ERL
     int max_sec = 60;
     enif_get_int(env, argv[0], &max_sec);
     present_image_picker(pid, UIImagePickerControllerSourceTypeCamera,
-                         UIImagePickerControllerCameraCaptureModeVideo);
+                         UIImagePickerControllerCameraCaptureModeVideo, max_sec);
     return enif_make_atom(env, "ok");
 }
 

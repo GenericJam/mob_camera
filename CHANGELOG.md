@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **iOS: `capture_video/2` no longer aborts the app on a physical iPhone.**
+  The picker set `cameraCaptureMode` to video before adding the movie type
+  to `mediaTypes`, and `UIImagePickerController` throws
+  `NSInvalidArgumentException` for a capture mode its media types don't
+  allow; nothing caught it, so the app was killed (SIGABRT, seen on an
+  iPhone SE 3rd gen, iOS 26.5). The media types are now set first.
+- **iOS: a captured video's `duration` is its length in seconds**, read
+  from the file, as on Android; it was always `0.0`. And
+  `capture_video/2`'s `:max_duration` now limits the recording on iOS
+  (`videoMaximumDuration`); it was read and ignored there.
+
 ## [0.1.14] - 2026-10-13
 
 ### Fixed
